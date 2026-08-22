@@ -2980,11 +2980,16 @@ def list_authenticated_providers(
         # OAuth via external credential files).
         if not has_creds:
             try:
-                from hermes_cli.auth import _load_auth_store
+                from hermes_cli.auth import _load_auth_store, _load_provider_state
                 store = _load_auth_store()
                 providers_store = store.get("providers", {})
                 if store and (pid in providers_store or hermes_slug in providers_store):
                     has_creds = True
+                if not has_creds:
+                    for _provider_id in dict.fromkeys((pid, hermes_slug)):
+                        if isinstance(_load_provider_state(store, _provider_id), dict):
+                            has_creds = True
+                            break
             except Exception as exc:
                 logger.debug("Auth store check failed for %s: %s", pid, exc)
         # Fallback: check the credential pool with full auto-seeding.

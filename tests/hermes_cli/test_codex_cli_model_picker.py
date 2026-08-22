@@ -72,6 +72,85 @@ def test_normal_path_still_works(hermes_auth_only_env):
     assert "openai-codex" in slugs
 
 
+def test_profile_picker_reads_global_codex_without_migrating_auth(tmp_path, monkeypatch):
+    """A profile-local Nous login must not hide or copy the global Codex login."""
+    import agent.models_dev as models_dev
+    import hermes_cli.models as models_mod
+    import hermes_cli.model_switch as model_switch
+    import hermes_cli.providers as providers_mod
+
+    global_root = tmp_path / ".hermes"
+    profile_home = global_root / "profiles" / "coder"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+    global_store = {
+        "version": 2,
+        "active_provider": "openai-codex",
+        "providers": {
+            "openai-codex": {
+                "tokens": {
+                    "access_token": "global-codex-access",
+                    "refresh_token": "global-codex-refresh",
+                },
+            },
+        },
+    }
+    profile_store = {
+        "version": 2,
+        "active_provider": "nous",
+        "providers": {
+            "nous": {
+                "access_token": "profile-nous-access",
+                "refresh_token": "profile-nous-refresh",
+            },
+        },
+    }
+    (global_root / "auth.json").write_text(json.dumps(global_store, indent=2))
+    (profile_home / "auth.json").write_text(json.dumps(profile_store, indent=2))
+    global_before = (global_root / "auth.json").read_text()
+    profile_before = (profile_home / "auth.json").read_text()
+
+    monkeypatch.setattr(models_dev, "PROVIDER_TO_MODELS_DEV", {})
+    monkeypatch.setattr(models_dev, "fetch_models_dev", lambda: {})
+    monkeypatch.setattr(models_mod, "CANONICAL_PROVIDERS", [])
+    monkeypatch.setattr(models_mod, "clear_provider_models_cache", lambda: None)
+    monkeypatch.setattr(models_mod, "get_curated_nous_model_ids", lambda: ["nous-model"])
+    monkeypatch.setattr(models_mod, "cached_provider_model_ids", lambda _provider: ["codex-model"])
+    monkeypatch.setattr(models_mod, "get_pricing_for_provider", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(models_mod, "check_nous_free_tier", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        models_mod,
+        "union_with_portal_paid_recommendations",
+        lambda model_ids, *_args, **_kwargs: (model_ids, {}),
+    )
+    monkeypatch.setattr(
+        providers_mod,
+        "HERMES_OVERLAYS",
+        {
+            "nous": providers_mod.HERMES_OVERLAYS["nous"],
+            "openai-codex": providers_mod.HERMES_OVERLAYS["openai-codex"],
+        },
+    )
+    # Isolate the regression to the singleton-state fallback under test.
+    monkeypatch.setattr(model_switch, "_credential_pool_is_usable", lambda *_args, **_kwargs: False)
+
+    providers = model_switch.list_authenticated_providers(
+        current_provider="nous",
+        current_model="nous-model",
+        max_models=10,
+        refresh=True,
+    )
+    by_slug = {provider["slug"]: provider for provider in providers}
+
+    assert set(by_slug) == {"nous", "openai-codex"}
+    assert by_slug["nous"]["is_current"] is True
+    assert by_slug["openai-codex"]["is_current"] is False
+    assert (global_root / "auth.json").read_text() == global_before
+    assert (profile_home / "auth.json").read_text() == profile_before
+    assert "credential_pool" not in (profile_home / "auth.json").read_text()
+
+
 
 
 @pytest.fixture()

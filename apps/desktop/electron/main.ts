@@ -11076,7 +11076,12 @@ function focusWindow(win) {
   win.focus()
 }
 
-function spawnSecondaryWindow({ sessionId, watch }: { sessionId?: string; watch?: boolean } = {}) {
+function spawnSecondaryWindow({
+  sessionId,
+  profile,
+  connectionId,
+  watch
+}: { sessionId?: string; profile?: string; connectionId?: string; watch?: boolean } = {}) {
   const icon = getAppIconPath()
 
   const win = new BrowserWindow({
@@ -11139,6 +11144,8 @@ function spawnSecondaryWindow({ sessionId, watch }: { sessionId?: string; watch?
     buildSessionWindowUrl(sessionId, {
       devServer: DEV_SERVER,
       rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex(),
+      profile,
+      connectionId,
       watch
     }),
     'Session window'
@@ -11148,8 +11155,16 @@ function spawnSecondaryWindow({ sessionId, watch }: { sessionId?: string; watch?
 }
 
 // Open (or focus) a standalone window for a single chat session.
-function createSessionWindow(sessionId, { watch = false } = {}) {
-  return sessionWindows.openOrFocus(sessionId, () => spawnSecondaryWindow({ sessionId, watch }))
+function createSessionWindow(
+  sessionId,
+  { profile, connectionId, watch = false }: { profile?: string; connectionId?: string; watch?: boolean } = {}
+) {
+  return sessionWindows.openOrFocus(
+    sessionId,
+    () => spawnSecondaryWindow({ sessionId, profile, connectionId, watch }),
+    profile,
+    connectionId
+  )
 }
 
 // Additional full "instance" windows — peers of the primary that render the
@@ -12344,7 +12359,31 @@ ipcMain.handle('hermes:window:openSession', async (_event, sessionId, opts) => {
     return { ok: false, error: 'invalid-session-id' }
   }
 
-  createSessionWindow(sessionId.trim(), { watch: opts?.watch === true })
+  let profile
+  let connectionId
+
+  if (opts?.profile !== undefined) {
+    if (typeof opts.profile !== 'string' || !opts.profile.trim() || !PROFILE_NAME_RE.test(opts.profile.trim())) {
+      return { ok: false, error: 'invalid-profile' }
+    }
+
+    profile = opts.profile.trim()
+  }
+
+  if (opts?.connectionId !== undefined) {
+    if (typeof opts.connectionId !== 'string' || !opts.connectionId.trim()) {
+      return { ok: false, error: 'invalid-connection' }
+    }
+
+    connectionId = opts.connectionId.trim()
+    const registry = readDesktopConnectionsRegistry()
+
+    if (!registry.connections.some(connection => connection.id === connectionId)) {
+      return { ok: false, error: 'invalid-connection' }
+    }
+  }
+
+  createSessionWindow(sessionId.trim(), { profile, connectionId, watch: opts?.watch === true })
 
   return { ok: true }
 })

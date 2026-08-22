@@ -27,6 +27,51 @@ export function isSecondaryWindow(): boolean {
   return result
 }
 
+function readWindowSearchParam(search: string, key: string): null | string {
+  try {
+    return new URLSearchParams(search).get(key)?.trim() || null
+  } catch {
+    return null
+  }
+}
+
+// The durable session identity carried by a standalone secondary window. It
+// lives before the HashRouter fragment so an auxiliary boot can still recover
+// the target when the hash temporarily settles on the root route.
+export function windowSessionOverride(
+  search = typeof window === 'undefined' ? '' : window.location.search
+): null | string {
+  return readWindowSearchParam(search, 'session')
+}
+
+// Resolve the primary chat's routed identity without letting a helper-window
+// query leak into ordinary app routes. A valid hash route always wins. Only a
+// non-watch secondary at the root may use the durable query fallback; HUD,
+// peer, primary, and watch windows retain their existing routing behavior.
+export function primarySessionIdForWindow(
+  pathname: string,
+  routedSessionId: null | string,
+  search = typeof window === 'undefined' ? '' : window.location.search
+): null | string {
+  if (routedSessionId) {
+    return routedSessionId
+  }
+
+  if (pathname !== '/') {
+    return null
+  }
+
+  if (readWindowSearchParam(search, 'win') !== SECONDARY_WINDOW_FLAG) {
+    return null
+  }
+
+  if (readWindowSearchParam(search, 'watch') === '1') {
+    return null
+  }
+
+  return windowSessionOverride(search)
+}
+
 let watchWindowCache: boolean | null = null
 
 // A "hud" window is HUD mode: the chrome-free floating chat. Unlike the pet
@@ -111,6 +156,13 @@ export function windowProfileOverride(): null | string {
   }
 }
 
+// The source connection a secondary window was opened against. Like the
+// profile override, this is intentionally parsed from the pre-hash query so
+// the renderer can pin only this window without changing the main renderer.
+export function windowConnectionOverride(): null | string {
+  return readWindowSearchParam(typeof window === 'undefined' ? '' : window.location.search, 'connectionId')
+}
+
 // True when running inside the Electron desktop shell (the preload bridge is
 // present). The "open in new window" affordance is desktop-only.
 export function canOpenSessionWindow(): boolean {
@@ -148,7 +200,10 @@ async function runWindowOpen(call: () => Promise<WindowOpenResult>, failMessage:
 // Open (or focus) a standalone OS window for a single chat session. No-ops
 // gracefully outside Electron so callers can wire it unconditionally.
 // `watch: true` opens a spectator window (lazy resume, live-mirror stream).
-export async function openSessionInNewWindow(sessionId: string, opts?: { watch?: boolean }): Promise<void> {
+export async function openSessionInNewWindow(
+  sessionId: string,
+  opts?: { connectionId?: string; profile?: string; watch?: boolean }
+): Promise<void> {
   if (!sessionId || !canOpenSessionWindow()) {
     return
   }

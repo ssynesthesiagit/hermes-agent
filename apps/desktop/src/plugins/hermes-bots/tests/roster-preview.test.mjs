@@ -92,6 +92,11 @@ test('generatedSessionTitle: caps the generated label length', () => {
 function renderRuntime() {
   const atom = value => ({ get: () => value, set: () => undefined })
   const jsx = (type, props = {}) => ({ type, props })
+  const opened = []
+  const activeRequests = []
+  const routedRequests = []
+  const ensured = []
+  const mainOpened = []
   const context = {
     atom,
     jsx,
@@ -111,8 +116,28 @@ function renderRuntime() {
         profile: { get: () => 'scribe', listen: () => undefined },
         gateway: { get: () => 'idle', listen: () => undefined }
       },
-      request: () => Promise.resolve({ sessions: [] }),
-      openSession: () => undefined,
+      request: (...args) => {
+        activeRequests.push(args)
+        return Promise.resolve({ sessions: [] })
+      },
+      requestProfile: async (route, method, params) => {
+        routedRequests.push([route, method, params])
+        if (method === 'profiles.list') {
+          return {
+            profiles: [{
+              name: 'ops',
+              preferred_session: { id: 'remote-pin', resolved_id: 'remote-tip', message_count: 2 }
+            }]
+          }
+        }
+        return {}
+      },
+      ensureAgent: async (...args) => ensured.push(args),
+      openSession: (...args) => mainOpened.push(args),
+      openSessionWindow: (...args) => {
+        opened.push(args)
+        return Promise.resolve({ ok: true })
+      },
       newChat: () => undefined,
       navigate: () => undefined
     },
@@ -134,6 +159,11 @@ function renderRuntime() {
     .replace('export default {', 'globalThis.plugin = {')
     .concat('\nglobalThis.__BotRow = BotRow;')
   vm.runInNewContext(code, context)
+  context.opened = opened
+  context.activeRequests = activeRequests
+  context.routedRequests = routedRequests
+  context.ensured = ensured
+  context.mainOpened = mainOpened
   return context
 }
 
@@ -254,4 +284,56 @@ test('previewKind: the primary profile surfaces as @hermes, never @default', () 
 
 test('previewKind: a named profile keeps its own handle', () => {
   assert.equal(fromBotOf("Message from agent 'ops': deploy is green"), 'ops')
+})
+
+test('behavior: rich local BotRow exposes a focused Bot Chat popout action', async () => {
+  const r = renderRuntime()
+  const tree = r.__BotRow({
+    bot: {
+      name: 'ops',
+      title: 'Ops',
+      description: '',
+      preferred_session: { id: 'canonical-1', title: 'Bot Chat', preview: 'hello', message_count: 2 }
+    },
+    onEdit: () => undefined
+  })
+  const menu = tree.props.children.find(child => child?.type === 'ContextMenuContent')
+  const action = menu?.props?.children?.find(child => child?.props?.children === 'Open Bot Chat in New Window')
+
+  assert.equal(typeof action?.props?.onSelect, 'function')
+  await action.props.onSelect()
+  await new Promise(resolve => setTimeout(resolve, 0))
+  assert.deepEqual(JSON.parse(JSON.stringify(r.opened)), [['canonical-1', { profile: 'ops' }]])
+})
+
+test('behavior: source-scoped BotRow pops out through its source without foregrounding or ensuring the main agent', async () => {
+  const r = renderRuntime()
+  const tree = r.__BotRow({
+    bot: {
+      name: 'ops',
+      title: 'Ops',
+      description: '',
+      connectionId: 'tailnet-a',
+      connectionLabel: 'Tailnet A',
+      remoteSource: true,
+      sourceScoped: true,
+      preferred_session: { id: 'remote-pin', title: 'Bot Chat', preview: 'hello', message_count: 2 }
+    },
+    onEdit: () => undefined
+  })
+  const menu = tree.props.children.find(child => child?.type === 'ContextMenuContent')
+  const action = menu?.props?.children?.find(child => child?.props?.children === 'Open Bot Chat in New Window')
+
+  assert.equal(typeof action?.props?.onSelect, 'function')
+  await action.props.onSelect()
+  await new Promise(resolve => setTimeout(resolve, 0))
+
+  assert.deepEqual(JSON.parse(JSON.stringify(r.opened)), [
+    ['remote-pin', { profile: 'ops', connectionId: 'tailnet-a' }]
+  ])
+  assert.equal(r.ensured.length, 0)
+  assert.equal(r.mainOpened.length, 0)
+  assert.equal(r.activeRequests.length, 0)
+  assert.equal(r.routedRequests[0][0].connectionId, 'tailnet-a')
+  assert.equal(r.routedRequests[0][1], 'profiles.list')
 })

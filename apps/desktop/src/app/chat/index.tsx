@@ -47,7 +47,7 @@ import {
 } from '@/store/session'
 import { $focusedStoredSessionId, sessionTileDelegate } from '@/store/session-states'
 import { $transcriptTailBySessionId } from '@/store/transcript-tail'
-import { isAuxiliaryWindow, isWatchWindow } from '@/store/windows'
+import { isAuxiliaryWindow, isWatchWindow, primarySessionIdForWindow } from '@/store/windows'
 import type { ModelOptionsResponse } from '@/types/hermes'
 
 import { primaryRouteSelectedSessionId, routeSessionId } from '../routes'
@@ -422,7 +422,8 @@ const ChatViewContent = memo(function ChatViewContent({
   // its own selection directly.
   const queueSessionKey = useMemo(() => {
     const effectiveSelectedSessionId = isPrimary
-      ? primaryRouteSelectedSessionId(location.pathname, selectedSessionId)
+      ? (primarySessionIdForWindow(location.pathname, routeSessionId(location.pathname)) ??
+        primaryRouteSelectedSessionId(location.pathname, selectedSessionId))
       : selectedSessionId
 
     return resolveComposerSessionKey(effectiveSelectedSessionId, sessions)
@@ -456,7 +457,10 @@ const ChatViewContent = memo(function ChatViewContent({
   }, [activeSessionId, onCancel, queueSessionKey])
 
   // A tile IS its session — no route involved, never "mismatched".
-  const routedSessionId = isPrimary ? routeSessionId(location.pathname) : selectedSessionId
+  const routedSessionId = isPrimary
+    ? primarySessionIdForWindow(location.pathname, routeSessionId(location.pathname))
+    : selectedSessionId
+
   const isRoutedSessionView = Boolean(routedSessionId)
 
   // The URL points at a session the store hasn't loaded yet (sidebar / cmd-K /

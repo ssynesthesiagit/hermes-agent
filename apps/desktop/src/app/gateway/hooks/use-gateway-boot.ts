@@ -56,7 +56,7 @@ import {
   recordSessionEventScope,
   resetTileRuntimeBindings
 } from '@/store/session-states'
-import { windowProfileOverride } from '@/store/windows'
+import { isSecondaryWindow, windowConnectionOverride, windowProfileOverride } from '@/store/windows'
 import type { RpcEvent } from '@/types/hermes'
 
 import { stashGatewaySurvivor, survivorIsStale, takeGatewaySurvivor } from './gateway-hmr-survivor'
@@ -139,6 +139,34 @@ export function useGatewayBoot({
       return () => void (cancelled = true)
     }
 
+    // A source-scoped secondary window owns its own (connectionId, profile)
+    // route. Resolve that pair only for this renderer; the ordinary main
+    // renderer continues through the legacy primary getConnection path.
+    const secondaryWindow = isSecondaryWindow()
+    const sourceConnectionId = secondaryWindow ? windowConnectionOverride() : null
+    const secondaryProfile = secondaryWindow ? windowProfileOverride() : null
+
+    const getWindowConnection = () => {
+      if (sourceConnectionId && typeof desktop.getConnectionFor === 'function') {
+        return desktop.getConnectionFor({ connectionId: sourceConnectionId, profile: secondaryProfile })
+      }
+
+      return desktop.getConnection(windowProfileOverride() ?? undefined)
+    }
+
+    const resolveWindowGatewayWsUrl = (conn: HermesConnection) => {
+      if (sourceConnectionId && desktop.getGatewayWsUrlFor) {
+        return resolveGatewayWsUrl(
+          {
+            getGatewayWsUrl: profile => desktop.getGatewayWsUrlFor!({ connectionId: sourceConnectionId, profile })
+          },
+          conn
+        )
+      }
+
+      return resolveGatewayWsUrl(desktop, conn)
+    }
+
     // --- Reconnect-after-sleep machinery -------------------------------------
     // macOS sleep silently drops the renderer's WebSocket. The backend Python
     // process keeps running, but nothing re-opened the socket on wake, so the
@@ -167,6 +195,13 @@ export function useGatewayBoot({
     // Bounded automatic boot retry for transient REMOTE failures (#82679).
     let bootRetryAttempt = 0
     let bootRetryTimer: ReturnType<typeof setTimeout> | null = null
+    // Do not publish `open` to the renderer until the primary socket has been
+    // adopted under the profile/source carried by this window. Route-resume
+    // effects are gated on $gatewayState, so publishing the transport-open
+    // edge first can make a secondary popout resolve its stored id against the
+    // launch/default route and latch the selection without ever dispatching
+    // session.resume.
+    let gatewayRouteReady = false
 
     const clearBootRetryTimer = () => {
       if (bootRetryTimer !== null) {
@@ -220,7 +255,7 @@ export function useGatewayBoot({
         // (same as boot/softSwitch). Passing $activeGatewayProfile would retarget
         // this primary socket at a secondary profile's backend after a live swap.
         // Secondaries reconnect via reconnectSecondaryGateways().
-        const conn = await desktop.getConnection()
+        const conn = await getWindowConnection()
 
         if (cancelled) {
           return
@@ -241,7 +276,7 @@ export function useGatewayBoot({
         // explicit auth rejection asks for sign-in; transport failures stay in
         // this reconnect loop. For local/token gateways the URL carries a
         // long-lived token and the re-mint is a cheap no-op.
-        const wsUrl = await resolveGatewayWsUrl(desktop, conn)
+        const wsUrl = await resolveWindowGatewayWsUrl(conn)
         await gateway.connect(wsUrl)
 
         if (cancelled) {
@@ -343,7 +378,12 @@ export function useGatewayBoot({
         setPrimaryGateway(gateway, key)
         void ensureGatewayForProfile(key)
       } catch {
-        $activeGatewayProfile.set(normalizeProfileKey(override))
+        const key = normalizeProfileKey(override)
+        $activeGatewayProfile.set(key)
+        setPrimaryGateway(gateway, key)
+      } finally {
+        gatewayRouteReady = true
+        reportPrimaryGatewayState(gateway.connectionState)
       }
     }
 
@@ -374,6 +414,7 @@ export function useGatewayBoot({
       reconnectFailingSince = null
       escalated = false
       reauthNotified = false
+      gatewayRouteReady = false
       callbacksRef.current.beforeConnectionSwitch()
       wipeSessionListsForGatewaySwitch()
 
@@ -383,14 +424,14 @@ export function useGatewayBoot({
 
         // Same override rule as boot(): a profile-pinned helper window stays
         // on its pinned profile's backend across a soft switch.
-        const conn = await desktop.getConnection(windowProfileOverride() ?? undefined)
+        const conn = await getWindowConnection()
 
         if (cancelled) {
           return
         }
 
         publish(conn)
-        const wsUrl = await resolveGatewayWsUrl(desktop, conn)
+        const wsUrl = await resolveWindowGatewayWsUrl(conn)
         await gateway.connect(wsUrl)
 
         if (cancelled) {
@@ -520,7 +561,9 @@ export function useGatewayBoot({
     const offState = gateway.onState(st => {
       // Mirror to the composer only while the primary is the active profile —
       // a background secondary reconnect mustn't flip the foreground state.
-      reportPrimaryGatewayState(st)
+      if (gatewayRouteReady) {
+        reportPrimaryGatewayState(st)
+      }
 
       if (st === 'open') {
         reconnectAttempt = 0
@@ -641,7 +684,7 @@ export function useGatewayBoot({
         // A profile-pinned helper window (the HUD) dials its target profile's
         // backend directly — ensureBackend spawns/reuses it from the pool.
         // Everything else keeps dialing the primary.
-        const conn = await desktop.getConnection(windowProfileOverride() ?? undefined)
+        const conn = await getWindowConnection()
 
         if (cancelled) {
           return
@@ -672,7 +715,7 @@ export function useGatewayBoot({
         // conn.wsUrl is stale; resolveGatewayWsUrl() re-mints it rather than
         // connecting with a dead ticket. Auth rejection asks for sign-in;
         // connectivity failures remain retryable.
-        const wsUrl = await resolveGatewayWsUrl(desktop, conn)
+        const wsUrl = await resolveWindowGatewayWsUrl(conn)
         await gateway.connect(wsUrl)
 
         if (cancelled) {
@@ -765,6 +808,7 @@ export function useGatewayBoot({
       const profile = survivor?.profile ?? $activeGatewayProfile.get()
       $activeGatewayProfile.set(profile)
       void ensureGatewayForProfile(profile)
+      gatewayRouteReady = true
 
       // Mirror the current (already-open) socket state into the composer so the
       // input doesn't sit disabled after the swap.

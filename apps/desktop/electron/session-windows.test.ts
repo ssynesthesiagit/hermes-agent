@@ -59,34 +59,34 @@ function makeFakeWindow() {
 test('buildSessionWindowUrl puts the secondary flag before the hash route (dev server)', () => {
   const url = buildSessionWindowUrl('abc123', { devServer: 'http://localhost:5173' })
 
-  assert.equal(url, 'http://localhost:5173/?win=secondary#/abc123')
+  assert.equal(url, 'http://localhost:5173/?win=secondary&session=abc123#/abc123')
 })
 
 test('buildSessionWindowUrl avoids a double slash when the dev server has a trailing slash', () => {
   const url = buildSessionWindowUrl('abc123', { devServer: 'http://localhost:5173/' })
 
-  assert.equal(url, 'http://localhost:5173/?win=secondary#/abc123')
+  assert.equal(url, 'http://localhost:5173/?win=secondary&session=abc123#/abc123')
 })
 
 test('buildSessionWindowUrl encodes the session id in the hash route', () => {
   const url = buildSessionWindowUrl('a b/c', { devServer: 'http://localhost:5173' })
 
-  // The query flag must precede the '#' or HashRouter would swallow it as the
-  // route; the id is URL-encoded so slashes/spaces survive routeSessionId().
-  assert.equal(url, 'http://localhost:5173/?win=secondary#/a%20b%2Fc')
+  // The query flag and durable session id must precede the '#' or HashRouter
+  // would swallow them as the route; the id is URL-encoded in both locations.
+  assert.equal(url, 'http://localhost:5173/?win=secondary&session=a%20b%2Fc#/a%20b%2Fc')
   assert.ok(url.indexOf('?win=secondary') < url.indexOf('#'))
 })
 
 test('buildSessionWindowUrl builds a packaged file URL with the flag before the hash', () => {
   const url = buildSessionWindowUrl('abc', { rendererIndexPath: '/opt/app/index.html' })
 
-  assert.match(url, /^file:\/\/.*index\.html\?win=secondary#\/abc$/)
+  assert.match(url, /^file:\/\/.*index\.html\?win=secondary&session=abc#\/abc$/)
 })
 
 test('buildSessionWindowUrl adds the watch flag for spectator windows, before the hash', () => {
   const url = buildSessionWindowUrl('abc', { devServer: 'http://localhost:5173', watch: true })
 
-  assert.equal(url, 'http://localhost:5173/?win=secondary&watch=1#/abc')
+  assert.equal(url, 'http://localhost:5173/?win=secondary&session=abc&watch=1#/abc')
 })
 
 test('buildInstanceWindowUrl marks a full peer without selecting a specialized renderer', () => {
@@ -100,6 +100,40 @@ test('buildInstanceWindowUrl marks a packaged full peer', () => {
   const url = buildInstanceWindowUrl({ rendererIndexPath: '/opt/app/index.html' })
 
   assert.match(url, /^file:\/\/.*index\.html\?peer=1$/)
+})
+
+test('buildSessionWindowUrl carries an encoded profile before watch and hash', () => {
+  const url = buildSessionWindowUrl('abc', {
+    devServer: 'http://localhost:5173',
+    profile: 'ops team/1&2',
+    watch: true
+  })
+
+  assert.equal(
+    url,
+    'http://localhost:5173/?win=secondary&session=abc&profile=ops%20team%2F1%262&watch=1#/abc'
+  )
+  assert.ok(url.indexOf('?win=secondary') < url.indexOf('#'))
+})
+
+test('buildSessionWindowUrl carries an encoded source connection after profile', () => {
+  const url = buildSessionWindowUrl('abc', {
+    devServer: 'http://localhost:5173',
+    profile: 'ops team',
+    connectionId: 'tailnet/one&two',
+    watch: true
+  })
+
+  assert.equal(
+    url,
+    'http://localhost:5173/?win=secondary&session=abc&profile=ops%20team&connectionId=tailnet%2Fone%26two&watch=1#/abc'
+  )
+})
+
+test('buildSessionWindowUrl trims the durable session id before encoding it', () => {
+  const url = buildSessionWindowUrl('  a b  ', { devServer: 'http://localhost:5173' })
+
+  assert.equal(url, 'http://localhost:5173/?win=secondary&session=a%20b#/a%20b')
 })
 
 test('instanceWindowBounds cascades a new window off its source bounds', () => {
@@ -203,6 +237,34 @@ test('registry trims the session id before keying', () => {
   registry.openOrFocus('  s1  ', () => win)
 
   assert.equal(registry.has('s1'), true)
+})
+
+test('registry isolates equal session ids owned by different profiles', () => {
+  const registry = createSessionWindowRegistry()
+  const defaultWindow = makeFakeWindow()
+  const opsWindow = makeFakeWindow()
+
+  registry.openOrFocus('s1', () => defaultWindow, 'default')
+  registry.openOrFocus('s1', () => opsWindow, 'ops')
+
+  assert.equal(registry.size, 2)
+  assert.equal(registry.get('s1', 'default'), defaultWindow)
+  assert.equal(registry.get('s1', 'ops'), opsWindow)
+  assert.equal(defaultWindow.calls.focus, 0)
+  assert.equal(opsWindow.calls.focus, 0)
+})
+
+test('registry isolates equal session ids owned by different source connections', () => {
+  const registry = createSessionWindowRegistry()
+  const first = makeFakeWindow()
+  const second = makeFakeWindow()
+
+  registry.openOrFocus('s1', () => first, 'default', 'source-a')
+  registry.openOrFocus('s1', () => second, 'default', 'source-b')
+
+  assert.equal(registry.size, 2)
+  assert.equal(registry.get('s1', 'default', 'source-a'), first)
+  assert.equal(registry.get('s1', 'default', 'source-b'), second)
 })
 
 test('chatWindowWebPreferences leaves background throttling to the runtime stream dial', () => {

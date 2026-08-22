@@ -16,6 +16,7 @@ import json
 import os
 import socket
 import threading
+import time
 import urllib.error
 import urllib.request
 from concurrent.futures import Future
@@ -1577,30 +1578,26 @@ class TestV1SpecRegressionFixes:
         profile_home = tmp_path / "profile"
         profile_home.mkdir()
         db = profile_home / "state.db"
-        import sqlite3
-        con = sqlite3.connect(db)
-        con.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, started_at REAL, title TEXT)")
-        con.commit(); con.close()
+        from hermes_state import SessionDB
+        session_db = SessionDB(db_path=db)
+        session_db.close()
 
-        fakebin = tmp_path / "bin"
-        fakebin.mkdir()
-        calls = tmp_path / "calls.jsonl"
-        hermes = fakebin / "hermes"
-        hermes.write_text("""#!/usr/bin/env python3
-import json, os, sqlite3, sys, time
-calls = os.environ['FAKE_HERMES_CALLS']
-with open(calls, 'a') as f:
-    f.write(json.dumps(sys.argv[1:]) + '\\n')
-home = os.environ['HERMES_HOME']
-con = sqlite3.connect(os.path.join(home, 'state.db'))
-if '--resume' not in sys.argv:
-    con.execute('INSERT INTO sessions (id, source, started_at, title) VALUES (?, ?, ?, ?)', ('sess-1', 'a2a', time.time(), None))
-    con.commit()
-print('fake reply')
-""")
-        hermes.chmod(0o755)
-        monkeypatch.setenv("PATH", str(fakebin) + os.pathsep + os.environ.get("PATH", ""))
-        monkeypatch.setenv("FAKE_HERMES_CALLS", str(calls))
+        import sqlite3
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd[1:])
+            if "--resume" not in cmd:
+                con = sqlite3.connect(db)
+                con.execute(
+                    "INSERT INTO sessions (id, source, started_at, title) VALUES (?, ?, ?, ?)",
+                    ("sess-1", "a2a", time.time(), None),
+                )
+                con.commit()
+                con.close()
+            return SimpleNamespace(returncode=0, stdout="fake reply\n", stderr="")
+
+        monkeypatch.setattr("plugins.platforms.a2a.adapter.subprocess.run", fake_run)
         monkeypatch.setattr("plugins.platforms.a2a.adapter._profile_home", lambda profile: str(profile_home))
 
         adapter = A2AAdapter(PlatformConfig(enabled=True, extra={
@@ -1611,9 +1608,8 @@ print('fake reply')
         assert (reply, state) == ("fake reply", protocol.STATE_COMPLETED)
         reply2, state2 = adapter._forward_to_profile(agent, "peer", "ctx/unsafe value", "again")
         assert (reply2, state2) == ("fake reply", protocol.STATE_COMPLETED)
-        argv_lines = [json.loads(line) for line in calls.read_text().splitlines()]
-        assert "--resume" not in argv_lines[0]
-        assert argv_lines[1][argv_lines[1].index("--resume") + 1] == "sess-1"
+        assert "--resume" not in calls[0]
+        assert calls[1][calls[1].index("--resume") + 1] == "sess-1"
         con = sqlite3.connect(db)
         title = con.execute("SELECT title FROM sessions WHERE id='sess-1'").fetchone()[0]
         con.close()

@@ -43,6 +43,7 @@ import {
   requestGatewayForProfile,
   retireLocalProfileGateways
 } from '@/store/gateway'
+import { setSidebarOpen } from '@/store/layout'
 import { notify, notifyError } from '@/store/notifications'
 import {
   $activeGatewayProfile,
@@ -77,6 +78,7 @@ import {
   $sessionStates
 } from '@/store/session-states'
 import { runGatewayRestart } from '@/store/system-actions'
+import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 import type { UsageStats } from '@/types/hermes'
 
 import { planPluginOpenSession } from './plugin-open-session-plan'
@@ -559,6 +561,25 @@ export const host = {
   ensureAgent: async (connectionId: null | string, profile: string): Promise<void> =>
     ensureGatewayAgent(connectionId, (profile ?? '').trim() || 'default'),
 
+  /** Activate an agent's owning gateway and reveal the core Sessions pane
+   *  scoped to that profile. Unlike `newChat`, this only re-homes the existing
+   *  workspace: it never creates or selects a draft. The explicit connection
+   *  id keeps same-named profiles on different registry sources distinct. */
+  openProfileSessions: async (connectionId: null | string, profile: string): Promise<void> => {
+    const targetProfile = (profile ?? '').trim() || 'default'
+    const source = (connectionId ?? '').trim()
+
+    if (source) {
+      await ensureGatewayAgent(source, targetProfile)
+    } else {
+      await ensureGatewayProfile(targetProfile)
+    }
+
+    setShowAllProfiles(false)
+    setSidebarOpen(true)
+    revealTreePane('sessions')
+  },
+
   /** Open a stored session the way core surfaces do. A plugin/Bot Mode open
    *  is navigation, not a workspace or chrome API-home switch —
    *  keepAllProfilesScope defaults true so `$activeGatewayProfile` /
@@ -736,6 +757,20 @@ export const host = {
         $gatewaySwapTarget.set(null)
       }
     }
+  },
+
+  /** Open (or focus) a focused Bot Chat transcript in a separate native
+   *  window. Feature-detectable for web/older desktop hosts; unlike
+   *  `openSession`, this never activates or re-homes the main renderer. */
+  openSessionWindow: async (
+    storedSessionId: string,
+    options: { connectionId?: string; profile?: string; watch?: boolean } = {}
+  ): Promise<void> => {
+    if (!canOpenSessionWindow()) {
+      throw new Error('Opening a chat window requires the Hermes Desktop shell')
+    }
+
+    await openSessionInNewWindow(storedSessionId, options)
   },
 
   /** Open (or re-front) a plugin-rendered MAIN-AREA workspace tile — the same

@@ -73,7 +73,7 @@ import {
 import { requestForSessionProfile } from '@/store/session-request-router'
 import { clearSessionTodos, setSessionTodos, todosForHydration } from '@/store/todos'
 import { armWakeWord, stopClientCapture } from '@/store/wake-word'
-import { isAuxiliaryWindow, isHudWindow } from '@/store/windows'
+import { isAuxiliaryWindow, isHudWindow, primarySessionIdForWindow } from '@/store/windows'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
 import { closeWorkspaceTab } from '../chat/close-tab'
@@ -221,7 +221,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const profileScope = useStore($profileScope)
   const boot = useStore($desktopBoot)
 
-  const routedSessionId = routeSessionId(location.pathname)
+  const routedSessionId = primarySessionIdForWindow(location.pathname, routeSessionId(location.pathname))
   const routedSessionIdRef = useRef(routedSessionId)
 
   routedSessionIdRef.current = routedSessionId
@@ -296,7 +296,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
       return requestForSessionProfile<T>(owner, ambientRequestGateway, method, params ?? {}, timeoutMs, signal)
     },
-    [ambientRequestGateway]
+    [ambientRequestGateway, selectedStoredSessionIdRef]
   )
 
   const { loadMoreMessagingForPlatform, loadMoreSessions, refreshCronJobs, refreshMessagingSessions, refreshSessions } =

@@ -275,6 +275,30 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect($gatewayState.get()).toBe('open')
   })
 
+  it('does not publish open until the window profile route is adopted', async () => {
+    let resolveProfile: (value: { profile: string }) => void = () => undefined
+    const pendingProfile = new Promise<{ profile: string }>(resolve => {
+      resolveProfile = resolve
+    })
+    const desktop = fakeDesktop()
+    desktop.profile.get = vi.fn(() => pendingProfile)
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+
+    // The transport is open, but the route still points at the launch profile.
+    // A secondary session resume must not run in this interval.
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    expect($gatewayState.get()).not.toBe('open')
+
+    resolveProfile({ profile: 'yatima' })
+    await flushAsync()
+
+    expect($activeGatewayProfile.get()).toBe('yatima')
+    expect($gatewayState.get()).toBe('open')
+  })
+
   it('re-fetches the profile rail from the NEW backend after a connection apply (#85731)', async () => {
     // The reported repro: connected to backend A, the rail shows A's named
     // profiles; the user applies a different remote/Cloud connection (soft

@@ -23,6 +23,7 @@ import {
 import {
   Activity,
   BarChart3,
+  Bot,
   BookOpen,
   Clock,
   Code,
@@ -64,6 +65,7 @@ import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
 import { cn } from "@/lib/utils";
 import { SidebarFooter } from "@/components/SidebarFooter";
 import { SidebarStatusStrip, gatewayLine } from "@/components/SidebarStatusStrip";
+import { MobileRouteShell } from "@/components/MobileRouteShell";
 import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
 import { useSidebarStatus } from "@/hooks/useSidebarStatus";
 import { AuthWidget } from "@/components/AuthWidget";
@@ -96,6 +98,7 @@ const ChannelsPage = lazy(() => import("@/pages/ChannelsPage"));
 const WebhooksPage = lazy(() => import("@/pages/WebhooksPage"));
 const SystemPage = lazy(() => import("@/pages/SystemPage"));
 const ChatPage = lazy(() => import("@/pages/ChatPage"));
+const MobilePage = lazy(() => import("@/pages/MobilePage"));
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
@@ -105,6 +108,10 @@ import type { PluginManifest } from "@/plugins";
 import { useTheme } from "@/themes";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { latchChatActivation } from "@/lib/chat-activation";
+import {
+  getProfileRouteTarget,
+  getRootRedirectTarget,
+} from "@/lib/root-redirect";
 import { api } from "@/lib/api";
 import type { StatusResponse, UpdateCheckResponse } from "@/lib/api";
 
@@ -123,8 +130,9 @@ function RouteFallback({ label = "Loading…" }: { label?: string }) {
   );
 }
 
-function RootRedirect() {
-  return <Navigate to="/sessions" replace />;
+export function RootRedirect() {
+  const isMobile = useBelowBreakpoint(1024);
+  return <Navigate to={getRootRedirectTarget(isMobile)} replace />;
 }
 
 function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
@@ -173,6 +181,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/config": ConfigPage,
   "/env": EnvPage,
   "/docs": DocsPage,
+  "/mobile": MobilePage,
 };
 
 // Route placeholder for /chat.  The persistent ChatPage host (rendered
@@ -371,7 +380,7 @@ const SIDEBAR_COLLAPSED_KEY = "hermes-sidebar-collapsed";
 
 export default function App() {
   const { t } = useI18n();
-  const { pathname } = useLocation();
+  const { pathname, search } = useLocation();
   const { manifests, loading: pluginsLoading } = usePlugins();
   const { theme } = useTheme();
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -400,6 +409,9 @@ export default function App() {
   const isDocsRoute = pathname === "/docs" || pathname === "/docs/";
   const normalizedPath = pathname.replace(/\/$/, "") || "/";
   const isChatRoute = normalizedPath === "/chat";
+  const isMobileRoute = normalizedPath === "/mobile";
+  const profileRouteTarget = getProfileRouteTarget(pathname, search, isMobile);
+  const isPhoneProfilesAlias = profileRouteTarget === "mobile-bots";
   const embeddedChat = isDashboardEmbeddedChatEnabled();
   // Defer mounting the persistent chat host (and its xterm chunk) until the
   // user has actually opened /chat at least once. Sticky after that so the
@@ -460,10 +472,21 @@ export default function App() {
     const base = embeddedChat
       ? [CHAT_NAV_ITEM, ...BUILTIN_NAV_REST]
       : BUILTIN_NAV_REST;
-    return showTokenAnalytics
+    const visibleItems = showTokenAnalytics
       ? base
       : base.filter((n) => n.path !== "/analytics");
-  }, [embeddedChat, showTokenAnalytics]);
+
+    // On a phone, /profiles opens the dedicated bot picker. Match the menu
+    // copy and glyph to that user-facing surface while retaining the existing
+    // route and profile terminology everywhere else.
+    return isMobile
+      ? visibleItems.map((item) =>
+          item.path === "/profiles"
+            ? { ...item, label: "Bots", labelKey: undefined, icon: Bot }
+            : item,
+        )
+      : visibleItems;
+  }, [embeddedChat, isMobile, showTokenAnalytics]);
 
   const sidebarNav = useMemo(
     () => partitionSidebarNav(builtinNav, manifests),
@@ -508,6 +531,24 @@ export default function App() {
     mql.addEventListener("change", onChange);
     return () => mql.removeEventListener("change", onChange);
   }, []);
+
+  // /mobile is a deliberately separate phone console. Keep the existing
+  // sidebar/header and persistent PTY host untouched for /chat and all admin
+  // routes; the mobile page gets the full viewport and its own bottom tabs.
+  if (isMobileRoute || isPhoneProfilesAlias) {
+    const mobileRoute = routes.find((route) => route.path === "/mobile");
+    return (
+      <ProfileProvider>
+        <Suspense fallback={<RouteFallback label="Loading mobile console…" />}>
+          <MobileRouteShell
+            isPhoneProfilesAlias={isPhoneProfilesAlias}
+            mobileElement={mobileRoute?.element ?? <MobilePage />}
+            mobilePage={MobilePage}
+          />
+        </Suspense>
+      </ProfileProvider>
+    );
+  }
 
   return (
     <ProfileProvider>

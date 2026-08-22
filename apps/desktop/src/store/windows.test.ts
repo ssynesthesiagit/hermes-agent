@@ -5,7 +5,10 @@ import {
   canOpenSessionWindow,
   isPeerInstanceWindow,
   openNewWindow,
-  openSessionInNewWindow
+  openSessionInNewWindow,
+  primarySessionIdForWindow,
+  windowConnectionOverride,
+  windowSessionOverride
 } from './windows'
 
 const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
@@ -104,6 +107,26 @@ describe('openSessionInNewWindow', () => {
     expect(notifyError).not.toHaveBeenCalled()
   })
 
+  it('forwards the owning profile for a focused Bot Chat window', async () => {
+    const open = vi.fn().mockResolvedValue({ ok: true })
+    installBridge(open)
+
+    await openSessionInNewWindow('s1', { profile: 'ops', watch: true })
+
+    expect(open).toHaveBeenCalledWith('s1', { profile: 'ops', watch: true })
+    expect(notifyError).not.toHaveBeenCalled()
+  })
+
+  it('forwards the owning source connection for a focused Bot Chat window', async () => {
+    const open = vi.fn().mockResolvedValue({ ok: true })
+    installBridge(open)
+
+    await openSessionInNewWindow('s1', { profile: 'ops', connectionId: 'tailnet-a' })
+
+    expect(open).toHaveBeenCalledWith('s1', { profile: 'ops', connectionId: 'tailnet-a' })
+    expect(notifyError).not.toHaveBeenCalled()
+  })
+
   it('notifies on an ok:false result', async () => {
     installBridge(vi.fn().mockResolvedValue({ ok: false, error: 'invalid-session-id' }))
 
@@ -118,6 +141,45 @@ describe('openSessionInNewWindow', () => {
     await openSessionInNewWindow('s1')
 
     expect(notifyError).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('windowConnectionOverride', () => {
+  it('reads the source connection from the pre-hash query', () => {
+    window.history.replaceState({}, '', '/?win=secondary&connectionId=tailnet-a#/s1')
+    expect(windowConnectionOverride()).toBe('tailnet-a')
+    window.history.replaceState({}, '', '/')
+  })
+})
+
+describe('primarySessionIdForWindow', () => {
+  it('pins a root secondary route to the durable pre-hash session query', () => {
+    expect(primarySessionIdForWindow('/', null, '?win=secondary&session=chat%20one')).toBe('chat one')
+  })
+
+  it('keeps a parsed hash route authoritative over the fallback query', () => {
+    expect(primarySessionIdForWindow('/', 'hash-session', '?win=secondary&session=query-session')).toBe('hash-session')
+  })
+
+  it('does not apply the fallback to ordinary, HUD, peer, or watch windows', () => {
+    const query = '?win=secondary&session=chat-session'
+
+    expect(primarySessionIdForWindow('/', null, '?session=chat-session')).toBeNull()
+    expect(primarySessionIdForWindow('/', null, '?win=hud&session=chat-session')).toBeNull()
+    expect(primarySessionIdForWindow('/', null, '?peer=1&session=chat-session')).toBeNull()
+    expect(primarySessionIdForWindow('/', null, `${query}&watch=1`)).toBeNull()
+    expect(primarySessionIdForWindow('/settings', null, query)).toBeNull()
+  })
+})
+
+describe('windowSessionOverride', () => {
+  it('reads and trims an encoded session from the pre-hash query', () => {
+    expect(windowSessionOverride('?win=secondary&session=%20chat%20one%20')).toBe('chat one')
+  })
+
+  it('returns null for malformed query input instead of throwing', () => {
+    expect(windowSessionOverride(Symbol('invalid-search') as unknown as string)).toBeNull()
+    expect(windowSessionOverride('?win=secondary&session=%00')).toBe('\0')
   })
 })
 

@@ -2,8 +2,10 @@ import { cleanup, render } from '@testing-library/react'
 import type { MutableRefObject } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { appViewForPath } from '@/app/routes'
 import { $resumeExhaustedSessionId, setResumeExhaustedSessionId } from '@/store/session'
 import { markSelectionRestore } from '@/store/session-states'
+import { primarySessionIdForWindow } from '@/store/windows'
 
 import { useRouteResume } from './use-route-resume'
 
@@ -202,6 +204,40 @@ describe('useRouteResume', () => {
 
     expect(resumeSession).toHaveBeenCalledTimes(1)
     expect(resumeSession).toHaveBeenCalledWith('session-2', true)
+  })
+
+  it('resumes a secondary query session while HashRouter is still at the root path', () => {
+    const resumeSession = vi.fn(async () => undefined)
+    const startFreshSessionDraft = vi.fn()
+    const activeSessionIdRef: MutableRefObject<null | string> = { current: null }
+    const creatingSessionRef = { current: false }
+    const runtimeIdByStoredSessionIdRef = { current: new Map() }
+    const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: null }
+    const routedSessionId = primarySessionIdForWindow('/', null, '?win=secondary&session=popout-session')
+
+    expect(appViewForPath('/')).toBe('chat')
+    expect(routedSessionId).toBe('popout-session')
+
+    render(
+      <RouteResumeHarness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        creatingSessionRef={creatingSessionRef}
+        currentView={appViewForPath('/')}
+        freshDraftReady={false}
+        gatewayState="open"
+        locationPathname="/"
+        resumeSession={resumeSession}
+        routedSessionId={routedSessionId}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionId={null}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        startFreshSessionDraft={startFreshSessionDraft}
+      />
+    )
+
+    expect(resumeSession).toHaveBeenCalledWith('popout-session', true)
+    expect(startFreshSessionDraft).not.toHaveBeenCalled()
   })
 
   it('arms the boot-restore one-shot for the FIRST resume only (⌘R tab persistence)', () => {

@@ -11,10 +11,11 @@ vi.mock('@/app/open-session', () => ({ openSession: vi.fn() }))
 vi.mock('@/components/pane-shell/tree/store', async () => {
   const { atom } = await import('nanostores')
 
-  return { $narrowViewport: atom(false) }
+  return { $narrowViewport: atom(false), revealTreePane: vi.fn() }
 })
 vi.mock('@/contrib/events', () => ({ onGatewayEvent: vi.fn() }))
 vi.mock('@/hermes', () => ({ deleteProfile: vi.fn(), getLogs: vi.fn(), getStatus: vi.fn() }))
+vi.mock('@/store/layout', () => ({ setSidebarOpen: vi.fn() }))
 vi.mock('@/store/notifications', () => ({ notify: vi.fn(), notifyError: vi.fn() }))
 vi.mock('@/store/system-actions', () => ({ runGatewayRestart: vi.fn() }))
 vi.mock('@/store/session', async () => {
@@ -106,11 +107,16 @@ const { deleteProfile } = await import('@/hermes')
 const { openGatewayForProfile, requestGatewayForAgent, requestGatewayForProfile, retireLocalProfileGateways } =
   await import('@/store/gateway')
 
+const { revealTreePane } = await import('@/components/pane-shell/tree/store')
+const { setSidebarOpen } = await import('@/store/layout')
+
 const {
   $activeGatewayProfile,
   $gatewaySwapTarget,
   $profiles,
+  ensureGatewayAgent,
   ensureGatewayProfile,
+  newSessionInProfile,
   refreshProfiles,
   setShowAllProfiles
 } = await import('@/store/profile')
@@ -297,6 +303,46 @@ describe('connection-aware plugin host APIs', () => {
 })
 
 describe('profile-aware plugin session opens', () => {
+  it('activates the owning source and reveals profile-scoped Sessions without creating a draft', async () => {
+    await host.openProfileSessions('homelab', 'research')
+
+    expect(ensureGatewayAgent).toHaveBeenCalledWith('homelab', 'research')
+    expect(ensureGatewayProfile).not.toHaveBeenCalled()
+    expect(setShowAllProfiles).toHaveBeenCalledWith(false)
+    expect(setSidebarOpen).toHaveBeenCalledWith(true)
+    expect(revealTreePane).toHaveBeenCalledWith('sessions')
+    expect(openSessionCore).not.toHaveBeenCalled()
+    expect(newSessionInProfile).not.toHaveBeenCalled()
+  })
+
+  it('uses the legacy profile activation when no source id is provided', async () => {
+    await host.openProfileSessions(null, 'research')
+
+    expect(ensureGatewayAgent).not.toHaveBeenCalled()
+    expect(ensureGatewayProfile).toHaveBeenCalledWith('research')
+    expect(setShowAllProfiles).toHaveBeenCalledWith(false)
+    expect(setSidebarOpen).toHaveBeenCalledWith(true)
+    expect(revealTreePane).toHaveBeenCalledWith('sessions')
+  })
+
+  it('opens a focused native session window without activating the main chat', async () => {
+    const open = vi.fn().mockResolvedValue({ ok: true })
+
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = { openSessionWindow: open }
+
+    await host.openSessionWindow('bot-chat', { profile: 'hyoseob', watch: true })
+
+    expect(open).toHaveBeenCalledWith('bot-chat', { profile: 'hyoseob', watch: true })
+    expect(openSessionCore).not.toHaveBeenCalled()
+  })
+
+  it('rejects clearly when the native window bridge is unavailable', async () => {
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {}
+
+    await expect(host.openSessionWindow('bot-chat', { profile: 'hyoseob' })).rejects.toThrow(/Desktop shell/i)
+    expect(openSessionCore).not.toHaveBeenCalled()
+  })
+
   it('waits until the target Bot Chat runtime and history are on main before resolving', async () => {
     vi.mocked(openGatewayForProfile).mockImplementationOnce(async () => undefined)
 

@@ -64,9 +64,24 @@ function chatWindowWebPreferences(preloadPath: string) {
 // onboarding overlays and the global session sidebar. `watch=1` marks a
 // spectator window (e.g. a running subagent's session): the renderer resumes it
 // lazily so the gateway never builds an agent just to stream into it.
-function buildSessionWindowUrl(sessionId: string, { devServer, rendererIndexPath, watch }: any = {}) {
-  const query = `?win=secondary${watch ? '&watch=1' : ''}`
-  const route = `#/${encodeURIComponent(sessionId)}`
+function buildSessionWindowUrl(
+  sessionId: string,
+  { devServer, rendererIndexPath, profile, connectionId, watch }: any = {}
+) {
+  const trimmedSessionId = typeof sessionId === 'string' ? sessionId.trim() : ''
+  const encodedSessionId = encodeURIComponent(trimmedSessionId)
+  const encodedProfile = typeof profile === 'string' && profile.trim() ? encodeURIComponent(profile.trim()) : ''
+
+  const encodedConnectionId =
+    typeof connectionId === 'string' && connectionId.trim() ? encodeURIComponent(connectionId.trim()) : ''
+
+  const query = `?win=secondary${encodedSessionId ? `&session=${encodedSessionId}` : ''}${
+    encodedProfile ? `&profile=${encodedProfile}` : ''
+  }${
+    encodedConnectionId ? `&connectionId=${encodedConnectionId}` : ''
+  }${watch ? '&watch=1' : ''}`
+
+  const route = `#/${encodedSessionId}`
 
   if (devServer) {
     const base = devServer.endsWith('/') ? devServer.slice(0, -1) : devServer
@@ -124,8 +139,25 @@ function instanceWindowBounds(base: { x: number; y: number; width: number; heigh
 function createSessionWindowRegistry() {
   const windows = new Map()
 
-  function openOrFocus(sessionId, factory) {
-    const key = typeof sessionId === 'string' ? sessionId.trim() : ''
+  function identityKey(sessionId, profile?: string, connectionId?: string) {
+    const sessionKey = typeof sessionId === 'string' ? sessionId.trim() : ''
+    const profileKey = typeof profile === 'string' ? profile.trim() : ''
+    const connectionKey = typeof connectionId === 'string' ? connectionId.trim() : ''
+
+    if (!sessionKey) {
+      return ''
+    }
+
+    // Preserve the legacy unscoped key so older callers/tests and existing
+    // windows keep their identity. Scoped windows include BOTH source and
+    // profile: equal stored ids are independent conversations when they live
+    // on different connections or profiles.
+    return profileKey || connectionKey ? `${connectionKey}\u0000${profileKey}\u0000${sessionKey}` : sessionKey
+  }
+
+  function openOrFocus(sessionId, factory, profile?: string, connectionId?: string) {
+    const sessionKey = typeof sessionId === 'string' ? sessionId.trim() : ''
+    const key = identityKey(sessionId, profile, connectionId)
 
     if (!key) {
       return null
@@ -148,7 +180,7 @@ function createSessionWindowRegistry() {
       return existing
     }
 
-    const win = factory(key)
+    const win = factory(sessionKey)
 
     if (!win) {
       return null
@@ -168,8 +200,10 @@ function createSessionWindowRegistry() {
 
   return {
     openOrFocus,
-    get: key => windows.get(key),
-    has: key => windows.has(key),
+    get: (sessionId, profile?: string, connectionId?: string) =>
+      windows.get(identityKey(sessionId, profile, connectionId)),
+    has: (sessionId, profile?: string, connectionId?: string) =>
+      windows.has(identityKey(sessionId, profile, connectionId)),
     get size() {
       return windows.size
     }

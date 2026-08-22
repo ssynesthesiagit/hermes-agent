@@ -4101,8 +4101,10 @@ const canonicalCreations = new Map()
 const PROFILE_SESSION_LIST_LIMIT = 200
 let botOpenGeneration = 0
 
-async function openStoredBotChat(name, storedId, summary) {
-  if (!storedId || typeof host.openSession !== 'function') {
+async function openStoredBotChat(name, storedId, summary, options = {}) {
+  const opener = options.window ? host.openSessionWindow : host.openSession
+
+  if (!storedId || typeof opener !== 'function') {
     throw new Error('This Hermes Desktop version cannot open stored sessions')
   }
 
@@ -4110,29 +4112,23 @@ async function openStoredBotChat(name, storedId, summary) {
     typeof summary?.message_count === 'number' && Number.isFinite(summary.message_count)
   const expectHistory = hasAuthoritativeCount ? summary.message_count > 0 : true
 
-  // A profile backend that just woke up can lose the hydration-timeout race
-  // even though the session is fine (hermes-agent#89617) — clicking Retry
-  // succeeds because the backend is warm by then. retryHydrationTimeoutOnce
-  // asks the SDK layer to retry that same wait internally, BEFORE it arms the
-  // core stranded-session overlay: a plugin-side retry can't do this because
-  // only host.openSession sees the resume-exhausted latch that overlay reads.
-  await host.openSession(storedId, {
-    profile: name,
-    intent: 'main',
-    awaitHydration: true,
-    expectHistory,
-    // Move the WORKSPACE onto this bot, not just the transcript.
-    //
-    // With the default (true) the bot's chat opened against its own backend
-    // while `$activeGatewayProfile` stayed on whatever profile was active
-    // before — so "New session" from inside any bot was created on that other
-    // backend. Measured: four consecutive new chats started from different
-    // bots all landed in the `ops` profile's state.db. Clicking a bot is a
-    // workspace switch in this product (one bot = one workspace), so the
-    // chrome has to follow.
-    keepAllProfilesScope: false,
-    retryHydrationTimeoutOnce: true
-  })
+  if (options.window) {
+    await opener(storedId, { profile: name })
+  } else {
+    // A profile backend that just woke up can lose the hydration-timeout race
+    // even though the session is fine (hermes-agent#89617). Retry inside the
+    // SDK before the stranded-session overlay is armed.
+    await host.openSession(storedId, {
+      profile: name,
+      intent: 'main',
+      awaitHydration: true,
+      expectHistory,
+      // Clicking a bot is a workspace switch: keep the active gateway profile
+      // aligned so a subsequent New session belongs to this bot.
+      keepAllProfilesScope: false,
+      retryHydrationTimeoutOnce: true
+    })
+  }
 
   return storedId
 }
@@ -4173,11 +4169,21 @@ async function findExistingCanonicalChat(name) {
  *  with the bot introducing itself). Pins the stored id in bot meta and
  *  returns it. Adopts an existing "Bot Chat" row instead of creating when
  *  the profile already has one (see findExistingCanonicalChat). */
-function createCanonicalChat(name) {
+function createCanonicalChat(name, options = {}) {
+  if (options.window && typeof host.openSessionWindow !== 'function') {
+    return Promise.reject(new Error('This Hermes Desktop version cannot open chat windows'))
+  }
+
   const inflight = canonicalCreations.get(name)
 
   if (inflight) {
-    return inflight
+    return inflight.then(async sid => {
+      if (options.window && sid) {
+        await host.openSessionWindow(sid, { profile: name })
+      }
+
+      return sid
+    })
   }
 
   const run = (async () => {
@@ -4186,11 +4192,12 @@ function createCanonicalChat(name) {
     if (existing?.id) {
       saveBotMeta(name, { chat: existing.id })
 
-      if (typeof host.openSession === 'function') {
+      const opener = options.window ? host.openSessionWindow : host.openSession
+      if (typeof opener === 'function') {
         // The exact-lookup gateway reports the compression-lineage tip as
         // resolved_id; the pin stays the durable row id (same split the
         // preferred_session path uses).
-        await openStoredBotChat(name, existing.resolved_id || existing.id, existing)
+        await openStoredBotChat(name, existing.resolved_id || existing.id, existing, options)
       }
 
       return existing.id
@@ -4216,7 +4223,7 @@ function createCanonicalChat(name) {
     // an unmounted session left the intro reply invisible until reopen.
     let opened = false
 
-    if (sid && typeof host.openSession === 'function') {
+    if (!options.window && sid && typeof host.openSession === 'function') {
       try {
         await host.openSession(sid, { profile: name, intent: 'main', keepAllProfilesScope: false })
         opened = true
@@ -4232,7 +4239,9 @@ function createCanonicalChat(name) {
       try {
         await host.request('prompt.submit', { session_id: runtime, text: 'Hey, tell me about yourself!' })
 
-        if (!opened && sid && typeof host.openSession === 'function') {
+        if (options.window && sid) {
+          await host.openSessionWindow(sid, { profile: name })
+        } else if (!opened && sid && typeof host.openSession === 'function') {
           await host.openSession(sid, { profile: name, intent: 'main', keepAllProfilesScope: false })
         }
       } catch {
@@ -4299,18 +4308,26 @@ function newerVisibleBotChat(pinned, history) {
   return id
 }
 
-async function openBotCanonicalChat(name, pinned, history, latestVisible) {
+async function openBotCanonicalChat(name, pinned, history, latestVisibleOrOptions = null) {
+  const hasWindowOption =
+    latestVisibleOrOptions &&
+    typeof latestVisibleOrOptions === 'object' &&
+    Object.prototype.hasOwnProperty.call(latestVisibleOrOptions, 'window')
+  const options = hasWindowOption ? latestVisibleOrOptions : {}
+  const latestVisible = hasWindowOption ? null : latestVisibleOrOptions
+
   if (!pinned) {
     // Grandfather only an actual Bot Chat. `last_session` is merely the most
     // recent row for the profile; adopting it blindly can claim an unrelated
     // user conversation and the hide sweep would then hide that conversation.
     const adoptId = isCanonicalBotChatHistory(history) ? history.id : null
-    if (adoptId && typeof host.openSession === 'function') {
-      await openStoredBotChat(name, adoptId, history)
+    const opener = options.window ? host.openSessionWindow : host.openSession
+    if (adoptId && typeof opener === 'function') {
+      await openStoredBotChat(name, adoptId, history, options)
       saveBotMeta(name, { chat: adoptId })
       return adoptId
     }
-    return createCanonicalChat(name)
+    return createCanonicalChat(name, options)
   }
 
   // Precise verification. An older gateway ignores the unknown param and
@@ -4337,7 +4354,7 @@ async function openBotCanonicalChat(name, pinned, history, latestVisible) {
     // until proven guilty — try it as-is. A rejected open is still ambiguous:
     // it can be the same reconnect/hydration outage that broke this lookup, so
     // preserve the forever-chat pin and surface Retry instead of forking it.
-    return openStoredBotChat(name, pinned, history)
+    return openStoredBotChat(name, pinned, history, options)
   }
 
   if (preferred && isCanonicalBotChatHistory(preferred)) {
@@ -4364,7 +4381,7 @@ async function openBotCanonicalChat(name, pinned, history, latestVisible) {
 
     if (newer) {
       try {
-        await openStoredBotChat(name, newer, history)
+        await openStoredBotChat(name, newer, latestVisible ?? history, options)
 
         return newer
       } catch {
@@ -4374,7 +4391,7 @@ async function openBotCanonicalChat(name, pinned, history, latestVisible) {
     }
 
     try {
-      await openStoredBotChat(name, preferred.resolved_id || preferred.id, preferred)
+      await openStoredBotChat(name, preferred.resolved_id || preferred.id, preferred, options)
       return pinned
     } catch (error) {
       // The precise lookup JUST confirmed this session exists, so a failed
@@ -4406,12 +4423,12 @@ async function openBotCanonicalChat(name, pinned, history, latestVisible) {
     const messageCount = Number(preferred.message_count) || 0
 
     if (messageCount > 0) {
-      await openStoredBotChat(name, preferred.resolved_id || preferred.id, preferred)
+      await openStoredBotChat(name, preferred.resolved_id || preferred.id, preferred, options)
       return pinned
     }
 
     await saveBotMeta(name, { chat: null })
-    return createCanonicalChat(name)
+    return createCanonicalChat(name, options)
   }
 
   // Definitively gone (db reset, or the lineage was rewritten past
@@ -4419,13 +4436,14 @@ async function openBotCanonicalChat(name, pinned, history, latestVisible) {
   // A previewed row is safe to re-anchor only when it is Bot Mode plumbing.
   // Otherwise a stale pin must not steal the profile's ordinary latest chat.
   const recoveryId = isCanonicalBotChatHistory(history) ? history.id : null
-  if (recoveryId && typeof host.openSession === 'function') {
-    await openStoredBotChat(name, recoveryId, history)
+  const opener = options.window ? host.openSessionWindow : host.openSession
+  if (recoveryId && typeof opener === 'function') {
+    await openStoredBotChat(name, recoveryId, history, options)
     saveBotMeta(name, { chat: recoveryId })
     return recoveryId
   }
   saveBotMeta(name, { chat: null })
-  return createCanonicalChat(name)
+  return createCanonicalChat(name, options)
 }
 
 async function prepareBotSource(bot, pinnedChat) {
@@ -4462,6 +4480,154 @@ async function prepareBotSource(bot, pinnedChat) {
     // Metadata refresh is best-effort; canonical creation remains the fallback.
     return null
   }
+}
+
+// Open a source-scoped Bot Chat without touching the foreground renderer.
+// Every discovery/create/pin RPC goes through the bot's own source route and
+// the resulting native window carries that same (connectionId, profile) pair.
+// This path is deliberately separate from prepareBotSource: that helper is
+// allowed to activate the main renderer for ordinary row clicks, while a
+// pop-out must never re-home the user's current chat.
+async function openSourceScopedBotChat(bot, pinnedChat, previewSession) {
+  const profile = String(bot?.name || '').trim() || 'default'
+  const connectionId = String(bot?.connectionId || '').trim() || undefined
+  const sourceRequest = (method, params = {}) =>
+    requestForBot(bot, method, { ...params, profile })
+  const sourceOpen = storedId =>
+    host.openSessionWindow(storedId, { profile, ...(connectionId ? { connectionId } : {}) })
+
+  let pin = String(pinnedChat || bot?.ui_meta?.['hermes-bots']?.chat || '').trim() || null
+  let openId = null
+  let storedId = pin
+  let shouldPersist = false
+  let lookupFailed = false
+
+  // Prefer the backend's precise canonical resolver. A compressed lineage
+  // may return a live resolved id while the durable pin remains its ancestor.
+  try {
+    const listed = await sourceRequest('profiles.list', {
+      include_sessions: true,
+      ...(pin ? { preferred_session_ids: { [profile]: pin } } : {})
+    })
+    const owner = (listed?.profiles || []).find(row => row?.name === profile)
+    const preferred = owner?.preferred_session
+
+    if (preferred) {
+      pin = pin || String(preferred.id || '').trim() || null
+      storedId = pin || String(preferred.id || '').trim()
+      openId = String(preferred.resolved_id || preferred.id || '').trim() || null
+    } else if (preferred === undefined) {
+      lookupFailed = true
+    }
+  } catch {
+    lookupFailed = true
+  }
+
+  // Legacy/temporarily unavailable profiles.list: a live pin is still safe
+  // to try directly. A rejected pin falls through to preview/title recovery.
+  if (!openId && pin && lookupFailed) {
+    try {
+      const resumed = await sourceRequest('session.resume', { session_id: pin, omit_messages: true })
+      openId = String(resumed?.session_id || '').trim() || null
+      storedId = String(resumed?.session_key || resumed?.resumed || pin).trim()
+    } catch {
+      /* recover from the preview or the newest canonical title below */
+    }
+  }
+
+  // First-open adoption uses the exact session the roster preview describes.
+  if (!openId && previewSession?.id) {
+    try {
+      const resumed = await sourceRequest('session.resume', {
+        session_id: previewSession.id,
+        omit_messages: true
+      })
+      openId = String(resumed?.session_id || '').trim() || null
+      storedId = String(resumed?.session_key || resumed?.resumed || previewSession.id).trim()
+      shouldPersist = Boolean(openId)
+    } catch {
+      /* title discovery below */
+    }
+  }
+
+  // If there is no preview, adopt the newest hidden canonical title before
+  // creating anything. The gateway's session.list ordering is newest first.
+  if (!openId) {
+    try {
+      const sessions = await sourceRequest('session.list', { include_hidden: true, limit: 200 })
+      for (const row of Array.isArray(sessions?.sessions) ? sessions.sessions : []) {
+        if (String(row?.title || '').trim() !== 'Bot Chat' || !row?.id) {
+          continue
+        }
+
+        try {
+          const resumed = await sourceRequest('session.resume', {
+            session_id: row.id,
+            omit_messages: true
+          })
+          openId = String(resumed?.session_id || '').trim() || null
+          storedId = String(resumed?.session_key || resumed?.resumed || row.id).trim()
+          shouldPersist = Boolean(openId)
+          break
+        } catch {
+          /* stale row — try the next canonical candidate */
+        }
+      }
+    } catch {
+      /* create below */
+    }
+  }
+
+  if (!openId) {
+    const created = await sourceRequest('session.create', { title: 'Bot Chat', hidden: true })
+    const runtime = String(created?.session_id || '').trim()
+    storedId = String(created?.stored_session_id || created?.session_key || '').trim()
+
+    if (!runtime || !storedId) {
+      throw new Error('The source did not return a Bot Chat session')
+    }
+
+    await sourceRequest('prompt.submit', {
+      session_id: runtime,
+      text: 'Hey, tell me about yourself!'
+    })
+
+    // Confirm the kickoff is durable before writing the owner-scoped pin and
+    // before exposing the native transcript window.
+    const durable = await sourceRequest('session.resume', {
+      session_id: storedId,
+      omit_messages: true
+    })
+    storedId = String(durable?.session_key || durable?.resumed || storedId).trim() || storedId
+    openId = String(durable?.session_id || runtime).trim()
+    shouldPersist = true
+  }
+
+  if (!openId || !storedId) {
+    throw new Error('Could not resolve the source Bot Chat')
+  }
+
+  if (shouldPersist) {
+    let existing = {}
+    try {
+      const listed = await sourceRequest('profiles.list', {})
+      const owner = (listed?.profiles || []).find(row => row?.name === profile)
+      const block = owner?.ui_meta?.['hermes-bots']
+      existing = block && typeof block === 'object' ? block : {}
+    } catch {
+      /* preserve the requested canonical pin even on older gateways */
+    }
+    await sourceRequest('profiles.configure', {
+      name: profile,
+      ui_meta: { 'hermes-bots': { ...existing, chat: storedId } }
+    })
+  }
+
+  // `openId` is the volatile runtime handle used only for immediate RPCs.
+  // Native window routes and registry keys must use the durable stored id so a
+  // re-resume never creates a second window for the same canonical chat.
+  await sourceOpen(storedId)
+  return storedId
 }
 
 function displayName(bot, meta) {
@@ -6296,6 +6462,41 @@ function BotRow({ bot, onDelete, onEdit, onGroup }) {
     }
   }
 
+  const openInWindow = async () => {
+    if (typeof host.openSessionWindow !== 'function') {
+      host.notifyError?.(new Error('This Hermes Desktop version cannot open chat windows'), 'Could not open Bot Chat')
+
+      return
+    }
+
+    let pinnedChat = meta?.chat || bot?.ui_meta?.['hermes-bots']?.chat
+
+    try {
+      if (bot.sourceScoped) {
+        await openSourceScopedBotChat(bot, pinnedChat, previewSession)
+      } else {
+        pinnedChat = await prepareBotSource(bot, pinnedChat)
+        await openBotCanonicalChat(bot.name, pinnedChat, previewSession, { window: true })
+      }
+    } catch (error) {
+      host.notifyError?.(error, `Could not open ${displayName(bot, meta)}'s chat in a new window`)
+    }
+  }
+
+  const openSessions = async () => {
+    if (typeof host.openProfileSessions !== 'function') {
+      host.notifyError?.(new Error('This Hermes Desktop version cannot open profile sessions'), 'Could not open Sessions')
+
+      return
+    }
+
+    try {
+      await host.openProfileSessions(bot.connectionId || null, bot.name)
+    } catch (error) {
+      host.notifyError?.(error, `Could not open ${displayName(bot, meta)}'s sessions`)
+    }
+  }
+
   const row = jsxs('button', {
     type: 'button',
     onPointerEnter: warm,
@@ -6403,12 +6604,23 @@ function BotRow({ bot, onDelete, onEdit, onGroup }) {
     ]
   })
 
-  // Thin rows from another source are navigation targets only. Their profile
-  // metadata is not loaded yet, so edit/delete/pin/group actions would mutate
-  // whichever backend happens to be active. A normal click activates the
-  // owner; the refreshed rich row then exposes the full context menu.
+  // Thin rows from another source expose only the non-mutating pop-out action.
+  // Their profile metadata is not loaded yet, so edit/delete/pin/group actions
+  // would mutate whichever backend happens to be active.
   if (bot.remoteSource) {
-    return row
+    return jsxs(ContextMenu, {
+      children: [
+        jsx(ContextMenuTrigger, { asChild: true, children: row }),
+        jsxs(ContextMenuContent, {
+          children: [
+            jsx(ContextMenuItem, {
+              onSelect: () => void openInWindow(),
+              children: 'Open Bot Chat in New Window'
+            })
+          ]
+        })
+      ]
+    })
   }
 
   return jsxs(ContextMenu, {
@@ -6448,6 +6660,14 @@ function BotRow({ bot, onDelete, onEdit, onGroup }) {
             children: meta?.hidden ? 'Unhide Bot' : 'Hide Bot'
           }),
           jsx(ContextMenuSeparator, {}),
+          jsx(ContextMenuItem, {
+            onSelect: () => void openInWindow(),
+            children: 'Open Bot Chat in New Window'
+          }),
+          jsx(ContextMenuItem, {
+            onSelect: () => void openSessions(),
+            children: 'Sessions'
+          }),
           jsx(ContextMenuItem, { onSelect: () => onEdit(bot), children: 'Edit Profile' }),
           !bot.remoteSource
             ? jsx(ContextMenuItem, {

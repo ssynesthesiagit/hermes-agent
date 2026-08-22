@@ -30,7 +30,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Optional, TypedDict
 
-from . import protocol, security
+from . import local_profile, protocol, security
 
 logger = logging.getLogger(__name__)
 
@@ -256,10 +256,11 @@ def a2a_discover(args: dict, **_: Any) -> str:
     return "\n".join(lines)
 
 
-def a2a_call(args: dict, **_: Any) -> str:
+def a2a_call(args: dict, **kwargs: Any) -> str:
     """Send a task to a peer agent and return its reply.
 
-    ``agent`` is a configured peer name (from ``a2a_agents``) or a direct URL.
+    ``agent`` is a configured peer name (from ``a2a_agents``), a direct URL, or
+    ``profile:<name>`` for a synchronous in-process local-profile Bot Chat.
     ``context_id`` continues a prior exchange (multi-turn) when provided.
     """
     # Accept common aliases models reach for (observed live: 'agent_name').
@@ -268,6 +269,20 @@ def a2a_call(args: dict, **_: Any) -> str:
     context_id = str(args.get("context_id") or args.get("contextId") or "").strip()
     if not agent or not message:
         return "Error: both 'agent' and 'message' are required."
+
+    if local_profile.is_local_agent(agent):
+        try:
+            return local_profile.route(
+                agent,
+                message,
+                context_id,
+                caller_session_id=str(kwargs.get("session_id") or kwargs.get("session_key") or ""),
+            )
+        except local_profile.LocalRouteError as exc:
+            return f"Error: local profile call failed — {exc}."
+        except Exception:
+            logger.exception("local A2A profile call failed")
+            return "Error: local profile call failed — internal routing error."
 
     peer = _resolve_peer(agent)
     if not peer or not peer.get("url"):
@@ -316,6 +331,14 @@ def a2a_list(args: dict | None = None, **_: Any) -> str:
             lines.append(f"  - {name}: {entry.get('url', '?')} (auth: {auth}){cap_str}")
     else:
         lines.append("No peers configured. Add them under 'a2a_agents' in config.yaml.")
+
+    local_profiles = local_profile.available_profiles()
+    if local_profiles:
+        lines.append("")
+        lines.append(
+            "Local profile targets (synchronous Bot Chat; use profile:<name>): "
+            + ", ".join(local_profiles[:50])
+        )
 
     convos = protocol.list_conversations()
     if convos:
@@ -505,16 +528,18 @@ _SCHEMAS: dict[str, _ToolSchema] = {
         "type": "function",
         "function": {
             "name": "a2a_call",
-            "description": (
-                "Send a natural-language task to a remote A2A agent and return "
-                "its reply. The agent is a peer (any A2A-compliant framework), "
-                "not a sub-agent you control. Pass 'context_id' from a previous "
+                "description": (
+                "Send a natural-language task to an A2A peer or a local Hermes "
+                "profile and return its reply. For a local Bot Chat, use the "
+                "exact form agent='profile:<canonical-profile>'; this route is "
+                "synchronous and stays in-process. Remote names/URLs retain "
+                "the normal peer behavior. Pass 'context_id' from a previous "
                 "reply to continue a multi-turn exchange."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "agent": {"type": "string", "description": "Configured peer name (from a2a_agents) or a full http(s):// URL."},
+                    "agent": {"type": "string", "description": "Configured peer name, full http(s):// URL, or local profile target profile:<canonical-profile>."},
                     "message": {"type": "string", "description": "The task / message to send the peer, in natural language."},
                     "context_id": {"type": "string", "description": "Optional: context id from a prior reply, to continue the conversation."},
                 },
@@ -526,7 +551,7 @@ _SCHEMAS: dict[str, _ToolSchema] = {
         "type": "function",
         "function": {
             "name": "a2a_list",
-            "description": "List configured A2A peer agents, persisted A2A conversations, and metrics.",
+            "description": "List configured remote A2A peers, local profile targets (profile:<name>), persisted A2A conversations, and metrics.",
             "parameters": {"type": "object", "properties": {}},
         },
     },

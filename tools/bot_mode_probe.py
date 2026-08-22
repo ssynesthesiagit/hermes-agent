@@ -188,7 +188,6 @@ def _peer_paragraph(root: Path) -> str:
         "peer list."
     )
 
-
 def _build_section(home: Path) -> str:
     root = _hermes_root(home)
     me = _profile_name(home)
