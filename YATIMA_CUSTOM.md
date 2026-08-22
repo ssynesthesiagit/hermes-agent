@@ -15,6 +15,14 @@ and machine-specific files must never be committed here.
 This first synchronized commit is a development checkpoint, not a release tag.
 Some desktop pop-out chat behavior is still undergoing final verification.
 
+## Documentation
+
+- [Current implementation status](docs/yatima/CURRENT_STATUS.md)
+- [Local-profile A2A routing](docs/yatima/A2A_LOCAL_PROFILE_ROUTING.md)
+- [Safe upstream updates and recovery](docs/yatima/UPDATE_AND_RECOVERY.md)
+- [Fresh Codex task handoff](docs/yatima/FRESH_CHAT_PROMPT.md)
+- [Documentation index](docs/yatima/README.md)
+
 ## Checkpoint validation
 
 The synchronized source was byte-compared with the 35 intended working-tree
@@ -78,7 +86,8 @@ updated application has passed real Windows and Ubuntu smoke tests.
 
 ## Recording fixes
 
-For any cross-machine failure, record the exact error, root cause, changed files,
-validation commands, deployment result, and rollback instructions in the private
-Yatima handoff documentation. Never paste access tokens, passwords, cookies, or
-private configuration into this public repository.
+For any cross-machine failure, record the public-safe error, root cause, changed
+files, validation commands, deployment result, and rollback instructions under
+`docs/yatima/`. Never paste access tokens, passwords, cookies, private
+configuration, session contents, memories, or machine-specific recovery paths
+into this public repository.
