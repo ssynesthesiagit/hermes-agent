@@ -47,6 +47,7 @@ import {
   setTurnStartedAt
 } from '@/store/session'
 import { $sessionTiles } from '@/store/session-states'
+import { isSecondaryWindow } from '@/store/windows'
 
 import sessionResumeActiveTurn from '../../../../../../tests/fixtures/session-resume-active-turn.json'
 import { deferred } from '../../../test/deferred'
@@ -76,6 +77,11 @@ vi.mock('@/components/pane-shell/tree/store', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
   noteActiveTreeGroup: vi.fn(),
   revealTreePane: vi.fn()
+}))
+
+vi.mock('@/store/windows', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  isSecondaryWindow: vi.fn(() => false)
 }))
 
 const RUNTIME_SESSION_ID = 'rt-new-001'
@@ -1691,6 +1697,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
     setResumeFailedSessionId(null)
     setMessages([])
     setSessions([])
+    vi.mocked(isSecondaryWindow).mockReturnValue(false)
     vi.restoreAllMocks()
   })
 
@@ -1798,6 +1805,51 @@ describe('resumeSession warm-cache mapping integrity', () => {
     })
     await resumePromise
     expect($messages.get()).toHaveLength(500)
+  })
+
+  it('paints a secondary window transcript before the cold runtime resume acknowledgement', async () => {
+    vi.mocked(isSecondaryWindow).mockReturnValue(true)
+    setSessions([storedSession({ id: 'stored-A', message_count: 2 })])
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      messages: [
+        { content: 'hello from the bot', role: 'assistant', timestamp: 1 },
+        { content: 'the durable reply', role: 'assistant', timestamp: 2 }
+      ],
+      session_id: 'stored-A'
+    } as never)
+
+    const deferredResume = deferred<SessionResumeResponse>()
+    const requestGatewayMock = vi.fn((method: string, _params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {
+        return deferredResume.promise
+      }
+
+      return Promise.resolve({})
+    })
+    const requestGateway = <T,>(method: string, params?: Record<string, unknown>): Promise<T> =>
+      requestGatewayMock(method, params) as Promise<T>
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(<ResumeHarness onReady={value => (resume = value)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(resume).not.toBeNull())
+    const resumePromise = resume!('stored-A', true)
+
+    await waitFor(() => expect($messages.get()).toHaveLength(2))
+    expect($activeSessionId.get()).toBeNull()
+
+    deferredResume.resolve({
+      session_id: 'rt-A',
+      resumed: 'stored-A',
+      message_count: 2,
+      messages: [],
+      info: {}
+    })
+    await resumePromise
+
+    expect($activeSessionId.get()).toBe('rt-A')
+    expect(
+      $messages.get().map(message => message.parts.find(part => part.type === 'text')?.text)
+    ).toEqual(['hello from the bot', 'the durable reply'])
   })
 
   it('honours a warm cache entry whose stored id matches and refreshes its persisted transcript', async () => {

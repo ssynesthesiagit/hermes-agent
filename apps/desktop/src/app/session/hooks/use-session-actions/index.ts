@@ -84,7 +84,7 @@ import { broadcastSessionsChanged } from '@/store/session-sync'
 import { forgetSessionUnread } from '@/store/session-unread'
 import { $archivedSessions } from '@/store/sidebar-archive'
 import { dropTranscriptTail, loadTranscriptTail, saveTranscriptTail } from '@/store/transcript-tail-cache'
-import { isWatchWindow } from '@/store/windows'
+import { isSecondaryWindow, isWatchWindow } from '@/store/windows'
 import type { SessionCreateResponse, SessionMessage, SessionResumeResponse, UsageStats } from '@/types/hermes'
 
 import { navigateToWorkspacePage, NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../../routes'
@@ -1141,9 +1141,12 @@ export function useSessionActions({
         // keeps it from surfacing as unhandled while the prefetch settles.
         resumePromise.catch(() => undefined)
 
-        // Keep both requests concurrent, but do not paint the REST result until
-        // the runtime resume has also settled. An eager prefetch paint followed
-        // by the runtime projection rebuilds large transcripts during resume.
+        // Keep both requests concurrent. The primary window waits to paint until
+        // runtime resume settles, avoiding two large transcript builds. A
+        // standalone session window is different: it has no previous thread to
+        // preserve and can otherwise remain completely blank while a cold
+        // profile runtime starts. Paint its correctly-addressed REST transcript
+        // immediately, then reconcile the live projection when resume binds.
         let prefetchedResult: { messages: SessionMessage[]; session_id?: string } | null = null
 
         try {
@@ -1154,13 +1157,38 @@ export function useSessionActions({
           // Non-fatal: gateway resume below can still hydrate the session.
         }
 
+        if (
+          prefetchedResult &&
+          isSecondaryWindow() &&
+          isCurrentResume() &&
+          (!prefetchedResult.session_id || prefetchedResult.session_id === storedSessionId)
+        ) {
+          const previousMessages = resumedSameSelectedSession
+            ? preserveLocalPendingTurnMessages(viewMessagesForReconcile(), resumeStartMessages)
+            : viewMessagesForReconcile()
+
+          const graftedPrefetch = graftRefreshedTailOntoBackfill(
+            toChatMessages(prefetchedResult.messages),
+            previousMessages
+          )
+
+          prefetchedTranscriptMessages = graftedPrefetch
+          localSnapshot = reconcileAuthoritativeChatMessages(graftedPrefetch, previousMessages)
+          prefetchApplied = true
+          prefetchedStoredSessionId = prefetchedResult.session_id || storedSessionId
+
+          if (!chatMessageArraysEquivalent($messages.get(), localSnapshot)) {
+            setMessages(localSnapshot)
+          }
+        }
+
         const resumed = await resumePromise
 
         if (!isCurrentResume()) {
           return
         }
 
-        if (prefetchedResult) {
+        if (prefetchedResult && !prefetchApplied) {
           const previousMessages = resumedSameSelectedSession
             ? preserveLocalPendingTurnMessages(viewMessagesForReconcile(), resumeStartMessages)
             : viewMessagesForReconcile()

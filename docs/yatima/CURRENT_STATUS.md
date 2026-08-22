@@ -26,13 +26,19 @@ Recorded 2026-08-22 for branch `codex/yatima-custom`.
 - Desktop Bots roster, Sessions action, and secondary bot-chat window support.
 - Bounded local-profile A2A routing through `a2a_call(agent="profile:<name>")`.
 
-## Open acceptance item
+## Remaining acceptance gate
 
-The secondary bot-chat window opens with the correct profile and session
-identity, but a cold-resumed transcript can still render blank while runtime
-resume binds. That transcript repair is not complete and must not be described
-as verified. After repairing it, rerun its owning tests and perform a packaged
-Windows smoke test before deploying the same change to Ubuntu.
+The secondary bot-chat window already opened with the correct profile/session
+identity, but its cold transcript waited for runtime resume and could remain
+blank during a slow profile start. The source repair now paints a correctly
+addressed REST-prefetched transcript immediately in secondary windows only,
+while the main window retains its single-build behavior and the live projection
+still reconciles when resume binds.
+
+The complete session-actions suite passed 55 of 55 tests and the Desktop,
+Electron, and e2e TypeScript projects passed typecheck after this repair. A real
+packaged Windows pop-out smoke test is still required before calling the UI gate
+complete or deploying the same package/source change to Ubuntu.
 
 ## Checkpoint evidence
 
@@ -46,10 +52,11 @@ source and test files in the verified Windows tree with zero mismatches.
   parallel run hit Windows worker-startup timeouts, not assertion failures.
 - Mixed Codex CLI/model-picker suite: 4 passed.
 - Desktop and mobile-web TypeScript typechecks: passed.
+- Secondary-window eager transcript paint: complete session-actions suite 55
+  passed; Desktop/Electron/e2e TypeScript typecheck passed.
 - Broad desktop plugin sweep: 396 of 398 passed. The two failures were in
   untouched delegated-routine shell tests where a Windows subprocess returned a
   null exit status; they remain a recorded non-owning environment issue.
 
 This is a development checkpoint, not a claim that every owner-facing flow is a
 finished release. Update this file whenever an acceptance gate changes.
-
