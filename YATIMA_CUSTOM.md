@@ -1,9 +1,10 @@
 # Yatima Hermes customization
 
 This branch is the cross-machine source checkpoint for the Yatima Hermes desktop,
-gateway, and mobile-web customizations. It intentionally contains source and tests
-only. Runtime configuration, credentials, sessions, logs, packaged applications,
-and machine-specific files must never be committed here.
+gateway, mobile-web, and native Android client customizations. It intentionally
+contains source and tests only. Runtime configuration, credentials, sessions,
+logs, packaged applications, and machine-specific files must never be committed
+here.
 
 ## Branch layout
 
@@ -35,6 +36,8 @@ source/test files before commit. The following focused checks passed on
 - Mobile-web owning tests: 45 passed across serial reruns.
 - Mixed Codex CLI/model-picker tests: 4 passed.
 - Desktop and mobile-web TypeScript typechecks.
+- Android unit tests and the debug APK build, including the no-face Athena
+  adaptive launcher icon (2026-08-23).
 
 The broad desktop plugin sweep passed 396 of 398 tests. Its two failures were in
 untouched delegated-routine shell tests where the Windows subprocess returned a
@@ -43,6 +46,8 @@ null exit status. They are retained as a known non-owning environment issue.
 ## Included work
 
 - Mobile WebView-oriented Hermes chat and bot-management UI.
+- Thin Tailscale-only Capacitor/Android client under `apps/android/`, including
+  secure multi-gateway storage, speech controls, and the verified launcher icon.
 - Canonical per-bot chat routing shared with desktop session history.
 - Desktop bot roster, session navigation, and secondary chat-window support.
 - Gateway reconnect/boot hardening used by desktop and mobile clients.

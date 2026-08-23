@@ -15,17 +15,17 @@ upstream NousResearch Hermes.
 
 ## Repository boundaries
 
-This public fork contains Hermes gateway, desktop, mobile-web, A2A source,
-tests, and public-safe operational documentation. It intentionally excludes:
+This public fork contains Hermes gateway, desktop, mobile-web, native Android,
+A2A source, tests, and public-safe operational documentation. The Android
+Capacitor project lives at [`apps/android/`](../../apps/android/). It
+intentionally excludes:
 
 - credentials, tokens, cookies, and private configuration;
 - sessions, memories, profile databases, logs, and audit data;
 - model weights, environments, dependencies, installers, and build output;
 - recovery archives and machine-specific filesystem paths.
 
-The Android application remains a separate thin native/WebView client because
-it has its own build, signing, and release lifecycle. Its hosted Hermes mobile
-UI and gateway contract are implemented in this fork. Publishing the native
-Android repository is a separate milestone and must not copy secrets or signing
-keys into this repository.
-
+The Android application remains a thin native/WebView client with its own build,
+signing, and release lifecycle, but its public-safe source is checkpointed in
+this fork alongside the hosted Hermes mobile UI and gateway contract. Signing
+keys and generated APKs are deliberately excluded.

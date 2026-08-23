@@ -1,0 +1,19 @@
+{
+  "name": "hermes-gateway-client",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Minimal Android WebView client for a hosted Hermes gateway",
+  "scripts": {
+    "cap:sync": "cap sync android",
+    "test": "cd android && gradlew.bat :app:testDebugUnitTest",
+    "assembleDebug": "cd android && gradlew.bat assembleDebug"
+  },
+  "dependencies": {
+    "@capacitor/android": "6.2.1",
+    "@capacitor/core": "6.2.1"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "6.2.1",
+    "typescript": "5.9.3"
+  }
+}

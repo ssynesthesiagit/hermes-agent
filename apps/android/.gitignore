@@ -1,0 +1,40 @@
+# Node / Capacitor dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Android / Gradle generated files
+.gradle/
+**/.gradle/
+**/build/
+local.properties
+android/local.properties
+captures/
+.externalNativeBuild/
+.cxx/
+
+# IDE and OS metadata
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Signing material and local secrets
+*.jks
+*.keystore
+keystore.properties
+*.pem
+*.p12
+*.env
+.env.*
+
+# Temporary files
+/artifacts/
+*.tmp
+*.bak
+*.log

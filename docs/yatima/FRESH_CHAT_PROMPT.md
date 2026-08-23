@@ -4,7 +4,8 @@ Use this prompt for a new coding task:
 
 > Continue the customized Hermes work in `ssynesthesiagit/hermes-agent` branch
 > `codex/yatima-custom`. Read `YATIMA_CUSTOM.md` and every file under
-> `docs/yatima/` before acting. Preserve the thin Android Tailscale client and
+> `docs/yatima/` before acting. The thin Android Tailscale client source is at
+> `apps/android/`; preserve it and the
 > hosted mobile-web contract, secure multiple-gateway switching, canonical
 > cross-device Bot Chats, streaming/reconnect, files/photos, dictation,
 > full-response TTS, Markdown/copy controls, combined Codex OAuth and Nous/local
@@ -17,4 +18,3 @@ Use this prompt for a new coding task:
 > owning tests/builds, package in staging, verify one machine, then deploy the
 > second. Begin with the first incomplete acceptance item in
 > `docs/yatima/CURRENT_STATUS.md`.
-

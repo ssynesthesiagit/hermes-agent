@@ -1,6 +1,6 @@
 # Current status
 
-Recorded 2026-08-22 for branch `codex/yatima-custom`.
+Recorded 2026-08-23 for branch `codex/yatima-custom`.
 
 ## Architecture
 
@@ -25,6 +25,8 @@ Recorded 2026-08-22 for branch `codex/yatima-custom`.
 - Canonical bot-chat routing shared across phone and desktop.
 - Desktop Bots roster, Sessions action, and secondary bot-chat window support.
 - Bounded local-profile A2A routing through `a2a_call(agent="profile:<name>")`.
+- Public-safe Android project checkpointed at `apps/android/` from verified
+  standalone commit `47b0acd`, including the no-face Athena launcher icon.
 
 ## Remaining acceptance gate
 
@@ -54,6 +56,8 @@ source and test files in the verified Windows tree with zero mismatches.
 - Desktop and mobile-web TypeScript typechecks: passed.
 - Secondary-window eager transcript paint: complete session-actions suite 55
   passed; Desktop/Electron/e2e TypeScript typecheck passed.
+- Android unit suite and debug APK assembly passed on 2026-08-23 after the
+  launcher-icon update.
 - Broad desktop plugin sweep: 396 of 398 passed. The two failures were in
   untouched delegated-routine shell tests where a Windows subprocess returned a
   null exit status; they remain a recorded non-owning environment issue.
