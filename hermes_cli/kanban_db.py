@@ -3092,6 +3092,11 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
         yield conn
     except Exception:
         try:
+            from hermes_cli import fleet_policy as _fleet_policy
+            _fleet_policy.compensate_pending_receipt(conn, "claim_transaction_failed")
+        except Exception:
+            pass
+        try:
             conn.execute("ROLLBACK")
         except sqlite3.OperationalError:
             # SQLite has already auto-rolled-back the transaction (typical
@@ -3103,6 +3108,11 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
         try:
             _execute_boundary_with_retry(conn, "COMMIT")
         except Exception:
+            try:
+                from hermes_cli import fleet_policy as _fleet_policy
+                _fleet_policy.compensate_pending_receipt(conn, "claim_commit_failed")
+            except Exception:
+                pass
             # COMMIT exhausted retries with the txn still open; roll back so the
             # connection isn't poisoned for the next BEGIN IMMEDIATE.
             try:
@@ -3112,7 +3122,15 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
             raise
         # Post-commit file-length check: header page_count must match actual file pages.
         # A discrepancy means a torn-extend — raise now rather than silently corrupt.
-        _check_file_length_invariant(conn)
+        try:
+            _check_file_length_invariant(conn)
+        except Exception:
+            try:
+                from hermes_cli import fleet_policy as _fleet_policy
+                _fleet_policy.compensate_pending_receipt(conn, "claim_commit_integrity_failed")
+            except Exception:
+                pass
+            raise
 
 
 # ---------------------------------------------------------------------------
@@ -4620,6 +4638,7 @@ def claim_task(
     *,
     ttl_seconds: Optional[int] = None,
     claimer: Optional[str] = None,
+    board: Optional[str] = None,
 ) -> Optional[Task]:
     """Atomically transition ``ready -> running``.
 
@@ -4675,6 +4694,17 @@ def claim_task(
                 """,
                 (now, int(stale["current_run_id"])),
             )
+        # One bounded policy seam immediately before the native CAS.  The
+        # policy module is deliberately outside this file; ordinary boards
+        # return an allow decision with no durable work and retain the exact
+        # historical claim path.
+        from hermes_cli import fleet_policy as _fleet_policy
+        policy = _fleet_policy.authorize_claim(
+            conn, task_id, board=board, source_status="ready", now=now,
+        )
+        if not policy.allowed:
+            return None
+        policy_metadata = policy.run_metadata(source_status="ready")
         cur = conn.execute(
             """
             UPDATE tasks
@@ -4689,6 +4719,8 @@ def claim_task(
             (lock, expires, now, task_id),
         )
         if cur.rowcount != 1:
+            _fleet_policy.cancel_receipt(policy.receipt_id, "cas_lost")
+            _fleet_policy.clear_pending_receipt(conn, policy.receipt_id)
             return None
         # Look up the current task row so we can populate the run with
         # its assignee / step / runtime cap.
@@ -4702,8 +4734,8 @@ def claim_task(
             INSERT INTO task_runs (
                 task_id, profile, step_key, status,
                 claim_lock, claim_expires, max_runtime_seconds,
-                started_at
-            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
+                started_at, metadata
+            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?)
             """,
             (
                 task_id,
@@ -4713,23 +4745,43 @@ def claim_task(
                 expires,
                 trow["max_runtime_seconds"] if trow else None,
                 now,
+                json.dumps(policy_metadata, ensure_ascii=False) if policy_metadata else None,
             ),
         )
         run_id = run_cur.lastrowid
+        if policy.receipt_id:
+            policy_metadata["fleet_policy"]["run_id"] = int(run_id)
+            conn.execute(
+                "UPDATE task_runs SET metadata = ? WHERE id = ?",
+                (json.dumps(policy_metadata, ensure_ascii=False), int(run_id)),
+            )
+        if policy.receipt_id:
+            try:
+                if not _fleet_policy.bind_receipt_run(policy.receipt_id, int(run_id)):
+                    _fleet_policy.cancel_receipt(policy.receipt_id, "receipt_bind_failed")
+                    raise RuntimeError("Fleet policy receipt binding failed")
+            except Exception:
+                _fleet_policy.cancel_receipt(policy.receipt_id, "receipt_bind_failed")
+                raise
         conn.execute(
             "UPDATE tasks SET current_run_id = ? WHERE id = ?",
             (run_id, task_id),
         )
-        _append_event(
-            conn, task_id, "claimed",
-            {"lock": lock, "expires": expires, "run_id": run_id},
-            run_id=run_id,
-        )
+        try:
+            _append_event(
+                conn, task_id, "claimed",
+                {"lock": lock, "expires": expires, "run_id": run_id, **policy.event_payload()},
+                run_id=run_id,
+            )
+        except Exception:
+            _fleet_policy.cancel_receipt(policy.receipt_id, "claim_transaction_failed")
+            raise
         claimed = get_task(conn, task_id)
+    _fleet_policy.clear_pending_receipt(conn, policy.receipt_id)
     _fire_kanban_lifecycle_hook(
         "kanban_task_claimed",
         task_id,
-        board=get_current_board(),
+        board=board or get_current_board(),
         assignee=claimed.assignee if claimed else None,
         run_id=run_id,
     )
@@ -4742,6 +4794,7 @@ def claim_review_task(
     *,
     ttl_seconds: Optional[int] = None,
     claimer: Optional[str] = None,
+    board: Optional[str] = None,
 ) -> Optional[Task]:
     """Atomically transition ``review -> running``.
 
@@ -4775,6 +4828,15 @@ def claim_review_task(
                     },
                 )
             return None
+        # Keep this as the single policy call in the review lane, immediately
+        # before its native compare-and-swap update.
+        from hermes_cli import fleet_policy as _fleet_policy
+        policy = _fleet_policy.authorize_claim(
+            conn, task_id, board=board, source_status="review", now=now,
+        )
+        if not policy.allowed:
+            return None
+        policy_metadata = policy.run_metadata(source_status="review")
         cur = conn.execute(
             """
             UPDATE tasks
@@ -4789,6 +4851,8 @@ def claim_review_task(
             (lock, expires, now, task_id),
         )
         if cur.rowcount != 1:
+            _fleet_policy.cancel_receipt(policy.receipt_id, "cas_lost")
+            _fleet_policy.clear_pending_receipt(conn, policy.receipt_id)
             return None
         trow = conn.execute(
             "SELECT assignee, max_runtime_seconds, current_step_key "
@@ -4800,8 +4864,8 @@ def claim_review_task(
             INSERT INTO task_runs (
                 task_id, profile, step_key, status,
                 claim_lock, claim_expires, max_runtime_seconds,
-                started_at
-            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
+                started_at, metadata
+            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?)
             """,
             (
                 task_id,
@@ -4811,20 +4875,41 @@ def claim_review_task(
                 expires,
                 trow["max_runtime_seconds"] if trow else None,
                 now,
+                json.dumps(policy_metadata, ensure_ascii=False) if policy_metadata else None,
             ),
         )
         run_id = run_cur.lastrowid
+        if policy.receipt_id:
+            policy_metadata["fleet_policy"]["run_id"] = int(run_id)
+            conn.execute(
+                "UPDATE task_runs SET metadata = ? WHERE id = ?",
+                (json.dumps(policy_metadata, ensure_ascii=False), int(run_id)),
+            )
+        if policy.receipt_id:
+            try:
+                if not _fleet_policy.bind_receipt_run(policy.receipt_id, int(run_id)):
+                    _fleet_policy.cancel_receipt(policy.receipt_id, "receipt_bind_failed")
+                    raise RuntimeError("Fleet policy receipt binding failed")
+            except Exception:
+                _fleet_policy.cancel_receipt(policy.receipt_id, "receipt_bind_failed")
+                raise
         conn.execute(
             "UPDATE tasks SET current_run_id = ? WHERE id = ?",
             (run_id, task_id),
         )
-        _append_event(
-            conn, task_id, "claimed",
-            {"lock": lock, "expires": expires, "run_id": run_id,
-             "source_status": "review"},
-            run_id=run_id,
-        )
-        return get_task(conn, task_id)
+        try:
+            _append_event(
+                conn, task_id, "claimed",
+                {"lock": lock, "expires": expires, "run_id": run_id,
+                 "source_status": "review", **policy.event_payload()},
+                run_id=run_id,
+            )
+        except Exception:
+            _fleet_policy.cancel_receipt(policy.receipt_id, "claim_transaction_failed")
+            raise
+        claimed = get_task(conn, task_id)
+    _fleet_policy.clear_pending_receipt(conn, policy.receipt_id)
+    return claimed
 
 
 def _retry_status_for_run(
@@ -10227,7 +10312,7 @@ def _dispatch_once_locked(
                     _per_profile_running.get(row_assignee, 0) + 1
                 )
             continue
-        claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
+        claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds, board=board)
         if claimed is None:
             continue
         try:
@@ -10248,6 +10333,24 @@ def _dispatch_once_locked(
         set_workspace_path(conn, claimed.id, str(workspace))
         if claimed.workspace_kind == "worktree":
             set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
+        _dispatch_policy_board = str(board or get_current_board()).strip().lower()
+        if _dispatch_policy_board in {"yatima-portfolio", "yatima-canary"}:
+            from hermes_cli import fleet_policy as _fleet_policy
+            if not _fleet_policy.refresh_workspace_identity(
+                conn, claimed.id, claimed.current_run_id, _dispatch_policy_board, str(workspace),
+                resolved_branch_name if claimed.workspace_kind == "worktree" else "",
+            ):
+                _row = conn.execute(
+                    "SELECT metadata FROM task_runs WHERE id = ?", (claimed.current_run_id,)
+                ).fetchone()
+                try:
+                    _metadata = json.loads(_row["metadata"]) if _row and _row["metadata"] else None
+                except (TypeError, ValueError):
+                    _metadata = None
+                _fleet_policy.worker_start_recheck(
+                    conn, claimed.id, claimed.current_run_id, _metadata, board=_dispatch_policy_board,
+                )
+                continue
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
@@ -10354,7 +10457,7 @@ def _dispatch_once_locked(
                     _per_profile_running.get(row["assignee"], 0) + 1
                 )
             continue
-        claimed = claim_review_task(conn, row["id"], ttl_seconds=ttl_seconds)
+        claimed = claim_review_task(conn, row["id"], ttl_seconds=ttl_seconds, board=board)
         if claimed is None:
             continue
         try:
@@ -10375,6 +10478,24 @@ def _dispatch_once_locked(
         set_workspace_path(conn, claimed.id, str(workspace))
         if claimed.workspace_kind == "worktree":
             set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
+        _dispatch_policy_board = str(board or get_current_board()).strip().lower()
+        if _dispatch_policy_board in {"yatima-portfolio", "yatima-canary"}:
+            from hermes_cli import fleet_policy as _fleet_policy
+            if not _fleet_policy.refresh_workspace_identity(
+                conn, claimed.id, claimed.current_run_id, _dispatch_policy_board, str(workspace),
+                resolved_branch_name if claimed.workspace_kind == "worktree" else "",
+            ):
+                _row = conn.execute(
+                    "SELECT metadata FROM task_runs WHERE id = ?", (claimed.current_run_id,)
+                ).fetchone()
+                try:
+                    _metadata = json.loads(_row["metadata"]) if _row and _row["metadata"] else None
+                except (TypeError, ValueError):
+                    _metadata = None
+                _fleet_policy.worker_start_recheck(
+                    conn, claimed.id, claimed.current_run_id, _metadata, board=_dispatch_policy_board,
+                )
+                continue
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
         # Force-load the sdlc-review skill for review agents — it carries
         # the review logic (AC verification, merge, etc.). The mandatory
@@ -10791,6 +10912,39 @@ def _default_spawn(
         env["HERMES_KANBAN_RUN_ID"] = str(task.current_run_id)
     if task.claim_lock:
         env["HERMES_KANBAN_CLAIM_LOCK"] = task.claim_lock
+    # Protected claims carry a signed-by-construction, immutable handoff in
+    # the run row.  The worker rechecks this before agent/tool construction.
+    _policy_board = board or get_current_board()
+    if task.current_run_id is not None and _policy_board in {"yatima-portfolio", "yatima-canary"}:
+        _policy_conn = None
+        try:
+            from hermes_cli import fleet_policy as _fleet_policy
+            _policy_conn = connect(board=board)
+            _policy_run = _policy_conn.execute(
+                "SELECT metadata FROM task_runs WHERE id = ?",
+                (int(task.current_run_id),),
+            ).fetchone()
+            if _policy_run and _policy_run["metadata"]:
+                _policy_metadata = json.loads(_policy_run["metadata"])
+                if isinstance(_policy_metadata, dict) and _policy_metadata.get("fleet_policy"):
+                    env["HERMES_KANBAN_POLICY_METADATA"] = json.dumps(
+                        _policy_metadata, ensure_ascii=False, sort_keys=True,
+                    )
+                    _fleet = _policy_metadata["fleet_policy"]
+                    env["HERMES_KANBAN_POLICY_RECEIPT"] = str(_fleet.get("receipt_id") or "")
+                    env["HERMES_KANBAN_POLICY_FINGERPRINT"] = str(_fleet.get("fingerprint") or "")
+                    env["HERMES_KANBAN_COMMENT_BOUNDARY"] = json.dumps(
+                        _fleet.get("comment_boundary") or {}, sort_keys=True,
+                    )
+                    if _fleet.get("mutating"):
+                        env["HERMES_KANBAN_MUTATING_RUN"] = "1"
+        except Exception:
+            # The worker-start recheck fails closed if trusted metadata is
+            # absent or malformed; never synthesize a weaker envelope here.
+            pass
+        finally:
+            if _policy_conn is not None:
+                _policy_conn.close()
     # Goal-loop mode: the worker reads these and wraps its run in the
     # Ralph-style /goal judge loop (see cli.py quiet-mode path). Only set
     # when enabled so non-goal tasks keep a clean env.

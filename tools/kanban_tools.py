@@ -429,6 +429,17 @@ def inject_new_comments_from_env(agent: Any) -> bool:
         + "Take it into account for the work you're doing right now:\n"
         + "\n".join(lines)
     )
+    # Mutating canary/bounded workers retain comments in the native task
+    # context, but must not turn a mid-run operator comment into an unbounded
+    # live steer. Read-only and shadow workers keep the existing behavior.
+    try:
+        from hermes_cli.fleet_policy import live_comment_steering_allowed
+        if not live_comment_steering_allowed():
+            return False
+    except Exception:
+        # A missing policy module must never suppress ordinary comment
+        # steering; protected workers fail closed at claim/start instead.
+        pass
     try:
         return bool(agent.steer(note))
     except Exception:

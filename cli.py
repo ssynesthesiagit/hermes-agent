@@ -21040,6 +21040,33 @@ def main(
     
     parsed_skills = _parse_skills_argument(skills)
 
+    # Dispatcher-owned protected workers must revalidate their trusted task
+    # envelope before HermesCLI, agent state, or a tool snapshot is created.
+    if (
+        os.environ.get("HERMES_KANBAN_TASK", "").strip()
+        and os.environ.get("HERMES_KANBAN_BOARD", "").strip().lower()
+        in {"yatima-portfolio", "yatima-canary"}
+    ):
+        try:
+            from hermes_cli import fleet_policy as _fleet_policy
+
+            _worker_task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+            _worker_run_id = int(os.environ.get("HERMES_KANBAN_RUN_ID", "0") or 0) or None
+            _worker_ok = _fleet_policy.worker_start_guard(
+                _worker_task_id, _worker_run_id,
+                board=os.environ.get("HERMES_KANBAN_BOARD", "").strip().lower(),
+            )
+            if not _worker_ok:
+                logger.error("Kanban worker rejected: trusted task metadata needs revalidation")
+                sys.exit(1)
+        except SystemExit:
+            raise
+        except Exception:
+            # Protected policy errors are fail-closed. Ordinary workers with
+            # legacy/no metadata are handled by worker_start_recheck itself.
+            logger.exception("Kanban worker policy recheck failed")
+            sys.exit(1)
+
     # Create CLI instance
     cli = HermesCLI(
         model=model,
