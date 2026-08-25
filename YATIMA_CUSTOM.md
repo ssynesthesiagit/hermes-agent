@@ -18,10 +18,14 @@ Some desktop pop-out chat behavior is still undergoing final verification.
 
 ## Documentation
 
+- [Canonical engineering handoff](docs/yatima/HANDOFF.md)
 - [Current implementation status](docs/yatima/CURRENT_STATUS.md)
+- [Operations runbook](docs/yatima/OPERATIONS_RUNBOOK.md)
+- [Troubleshooting](docs/yatima/TROUBLESHOOTING.md)
 - [Local-profile A2A routing](docs/yatima/A2A_LOCAL_PROFILE_ROUTING.md)
 - [Safe upstream updates and recovery](docs/yatima/UPDATE_AND_RECOVERY.md)
 - [Fresh Codex task handoff](docs/yatima/FRESH_CHAT_PROMPT.md)
+- [Incident and fix template](docs/yatima/INCIDENT_TEMPLATE.md)
 - [Documentation index](docs/yatima/README.md)
 
 ## Checkpoint validation

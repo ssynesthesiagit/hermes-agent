@@ -7,8 +7,8 @@ This is a small Capacitor 6.2.1 Android shell around the existing responsive Her
 Use the supplied JDK and Android SDK from PowerShell:
 
 ```powershell
-$env:JAVA_HOME = 'C:\Program Files\Eclipse Adoptium\jdk-17.0.20.8-hotspot'
-$env:ANDROID_HOME = 'C:\Users\ssyne\AppData\Local\Android\Sdk'
+$env:JAVA_HOME = '<path-to-a-JDK-17-installation>'
+$env:ANDROID_HOME = Join-Path $env:LOCALAPPDATA 'Android\Sdk'
 $env:ANDROID_SDK_ROOT = $env:ANDROID_HOME
 npm ci --workspaces=false
 npm run cap:sync --workspaces=false

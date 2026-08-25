@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 
 def _run_apply_profile_override(
@@ -111,6 +111,23 @@ class TestApplyProfileOverrideHermesHomeGuard:
         assert sys.argv == ["hermes", "gateway", "install", "--system"]
 
 
+class TestCanonicalMainModuleBinding:
+    """``python -m`` must not execute the CLI entrypoint twice."""
+
+    def test_package_import_reuses_the_running_main_module(self, monkeypatch):
+        import hermes_cli
+        import hermes_cli.main as main_module
+
+        stale_module = ModuleType("hermes_cli.main")
+        monkeypatch.setattr(main_module, "__name__", "__main__")
+        monkeypatch.setitem(sys.modules, "__main__", main_module)
+        monkeypatch.setitem(sys.modules, "hermes_cli.main", stale_module)
+        monkeypatch.setattr(hermes_cli, "main", stale_module, raising=False)
+
+        main_module._bind_canonical_main_module()
+
+        assert sys.modules["hermes_cli.main"] is main_module
+        assert hermes_cli.main is main_module
 
 
 class TestSupervisedChildIgnoresStickyProfile:
@@ -163,4 +180,3 @@ class TestSupervisedChildIgnoresStickyProfile:
         result = os.environ.get("HERMES_HOME")
         assert result is not None
         assert result.endswith("coder")
-

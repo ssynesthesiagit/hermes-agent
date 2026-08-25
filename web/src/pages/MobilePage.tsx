@@ -132,11 +132,28 @@ type MobileTab = (typeof MOBILE_TABS)[number]["id"];
 type MobileRpcResponse = Record<string, unknown>;
 type MobilePageProps = { initialTab?: MobileTab };
 type MobileSessionMode = "canonical" | "explicit";
+type MobileApprovalChoice = "once" | "session" | "always" | "deny";
+type MobileApprovalRequest = {
+  allowPermanent: boolean;
+  choices: MobileApprovalChoice[];
+  command: string;
+  description: string;
+  requestId: string | null;
+  sessionId: string;
+  smartDenied: boolean;
+};
 type MobileSessionPreference = {
   mode: MobileSessionMode;
   profile: string | null;
   sessionId: string | null;
 };
+
+const MOBILE_APPROVAL_CHOICES = new Set<MobileApprovalChoice>([
+  "once",
+  "session",
+  "always",
+  "deny",
+]);
 
 const EMPTY_STREAM: MobileStreamState = {
   messages: [],
@@ -174,6 +191,88 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function stringValue(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function booleanValue(value: unknown, fallback: boolean): boolean {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["1", "true", "yes"].includes(normalized)) return true;
+    if (["0", "false", "no"].includes(normalized)) return false;
+  }
+  return fallback;
+}
+
+function normalizeApprovalRequest(
+  value: unknown,
+  sessionId: string,
+): MobileApprovalRequest | null {
+  const payload = asRecord(value);
+  if (!payload) return null;
+
+  const command = stringValue(payload.command) ?? "";
+  const description = stringValue(payload.description) ?? "dangerous command";
+  const requestId = stringValue(payload.request_id);
+  const allowPermanent = booleanValue(payload.allow_permanent, true);
+  const smartDenied = booleanValue(payload.smart_denied, false);
+  const rawChoices = Array.isArray(payload.choices)
+    ? payload.choices
+        .map((choice) =>
+          typeof choice === "string" ? choice.trim().toLowerCase() : "",
+        )
+        .filter((choice): choice is MobileApprovalChoice =>
+          MOBILE_APPROVAL_CHOICES.has(choice as MobileApprovalChoice),
+        )
+    : null;
+  const choices = Array.from(
+    new Set(
+      (rawChoices ??
+        (smartDenied
+          ? (["once", "deny"] as const)
+          : (["once", "session", "always", "deny"] as const)))
+        .filter((choice) => choice !== "always" || allowPermanent)
+        .filter((choice) => !smartDenied || choice === "once" || choice === "deny"),
+    ),
+  );
+
+  return {
+    allowPermanent,
+    choices,
+    command,
+    description,
+    requestId,
+    sessionId,
+    smartDenied,
+  };
+}
+
+function approvalIdentity(request: MobileApprovalRequest): string {
+  return [
+    request.sessionId,
+    request.requestId ?? "",
+    request.requestId ? "" : request.command,
+    request.requestId ? "" : request.description,
+  ].join("\u0000");
+}
+
+function sameApprovalRequest(
+  left: MobileApprovalRequest | null,
+  right: MobileApprovalRequest | null,
+): boolean {
+  if (!left || !right || left.sessionId !== right.sessionId) return false;
+  if (left.requestId || right.requestId) {
+    return left.requestId !== null && left.requestId === right.requestId;
+  }
+  return left === right;
+}
+
+function pendingApprovalPayload(value: unknown): unknown {
+  if (Array.isArray(value)) return value[0];
+  const response = asRecord(value);
+  if (!response) return null;
+  if (Array.isArray(response.approvals)) return response.approvals[0] ?? null;
+  if (asRecord(response.approval)) return response.approval;
+  return null;
 }
 
 function errorMessage(error: unknown): string {
@@ -332,6 +431,12 @@ export default function MobilePage({ initialTab }: MobilePageProps = {}) {
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [sending, setSending] = useState(false);
   const [stopping, setStopping] = useState(false);
+  const [approvalRequest, setApprovalRequest] =
+    useState<MobileApprovalRequest | null>(null);
+  const [approvalError, setApprovalError] = useState<string | null>(null);
+  const [approvalConfirmationKey, setApprovalConfirmationKey] = useState<string | null>(null);
+  const [approvalRespondingChoice, setApprovalRespondingChoice] =
+    useState<MobileApprovalChoice | null>(null);
   const [reducedMotion, setReducedMotion] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
 
@@ -344,6 +449,10 @@ export default function MobilePage({ initialTab }: MobilePageProps = {}) {
   const durableSessionRef = useRef<string | null>(durableSessionId);
   const activeTabRef = useRef(activeTab);
   const syncPromiseRef = useRef<Promise<void> | null>(null);
+  const approvalRequestRef = useRef<MobileApprovalRequest | null>(null);
+  const approvalRevisionRef = useRef(0);
+  const approvalCardRef = useRef<HTMLElement>(null);
+  const approvalConfirmationButtonRef = useRef<HTMLButtonElement>(null);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const sendGenerationRef = useRef(0);
@@ -548,11 +657,102 @@ export default function MobilePage({ initialTab }: MobilePageProps = {}) {
     setSending(false);
   }, []);
 
+  const presentApproval = useCallback((request: MobileApprovalRequest) => {
+    if (!sameApprovalRequest(approvalRequestRef.current, request)) {
+      setApprovalError(null);
+    }
+    approvalRevisionRef.current += 1;
+    approvalRequestRef.current = request;
+    setApprovalRequest(request);
+    setApprovalConfirmationKey(null);
+    setApprovalRespondingChoice(null);
+  }, []);
+
+  const clearApprovalPresentation = useCallback(
+    (request?: MobileApprovalRequest): boolean => {
+      const current = approvalRequestRef.current;
+      if (request && !sameApprovalRequest(current, request)) return false;
+
+      approvalRevisionRef.current += 1;
+      approvalRequestRef.current = null;
+      setApprovalRequest((previous) => {
+        if (!request || sameApprovalRequest(previous, request)) return null;
+        return previous;
+      });
+      setApprovalConfirmationKey(null);
+      setApprovalRespondingChoice(null);
+      setApprovalError(null);
+      return true;
+    },
+    [],
+  );
+
+  const acknowledgeApproval = useCallback(
+    async (request: MobileApprovalRequest) => {
+      if (!request.requestId) return;
+      try {
+        await gateway.request(
+          "approval.received",
+          scopedParams(
+            {
+              request_id: request.requestId,
+              session_id: request.sessionId,
+            },
+            selectedProfileRef.current,
+          ),
+        );
+      } catch (error) {
+        if (sameApprovalRequest(approvalRequestRef.current, request)) {
+          setSessionError(errorMessage(error));
+        }
+      }
+    },
+    [gateway],
+  );
+
+  const replayPendingApproval = useCallback(
+    async (runtimeId: string | null) => {
+      if (!runtimeId || gateway.connectionState !== "open") return;
+      const revisionAtStart = approvalRevisionRef.current;
+      const currentAtStart = approvalRequestRef.current;
+      let response: unknown;
+      try {
+        response = await gateway.request<MobileRpcResponse>(
+          "approval.pending",
+          scopedParams({ session_id: runtimeId }, selectedProfileRef.current),
+        );
+      } catch {
+        return;
+      }
+
+      if (
+        runtimeSessionRef.current !== runtimeId ||
+        approvalRevisionRef.current !== revisionAtStart
+      ) {
+        return;
+      }
+
+      const pending = normalizeApprovalRequest(
+        pendingApprovalPayload(response),
+        runtimeId,
+      );
+      if (!pending) return;
+
+      const current = approvalRequestRef.current;
+      if (current && !sameApprovalRequest(current, pending)) return;
+      if (currentAtStart && !sameApprovalRequest(currentAtStart, pending)) return;
+      presentApproval(pending);
+      void acknowledgeApproval(pending);
+    },
+    [acknowledgeApproval, gateway, presentApproval],
+  );
+
   const bindSession = useCallback(
     (runtimeId: string, durableId: string | null, response: unknown) => {
       const previousRuntimeId = runtimeSessionRef.current;
       if (previousRuntimeId && previousRuntimeId !== runtimeId) {
         invalidateAsyncSend();
+        clearApprovalPresentation();
       }
       runtimeSessionRef.current = runtimeId;
       durableSessionRef.current = durableId;
@@ -565,8 +765,9 @@ export default function MobilePage({ initialTab }: MobilePageProps = {}) {
       setActivity(createEmptyMobileActivityState());
       setSessionError(null);
       setNotice(null);
+      void replayPendingApproval(runtimeId);
     },
-    [invalidateAsyncSend],
+    [clearApprovalPresentation, invalidateAsyncSend, replayPendingApproval],
   );
 
   const hydrateSession = useCallback(
@@ -719,6 +920,18 @@ export default function MobilePage({ initialTab }: MobilePageProps = {}) {
     return promise;
   }, [createSession, gateway, resumeSession]);
 
+  const handleApprovalEvent = useCallback(
+    (event: GatewayEvent) => {
+      const runtimeId = runtimeSessionRef.current;
+      if (!runtimeId || event.session_id !== runtimeId) return;
+      const request = normalizeApprovalRequest(event.payload, runtimeId);
+      if (!request) return;
+      presentApproval(request);
+      void acknowledgeApproval(request);
+    },
+    [acknowledgeApproval, presentApproval],
+  );
+
   useEffect(() => {
     if (!profilesReady || !gatewayProfilesReady || connectionState !== "open") return;
     void syncSession();
@@ -784,6 +997,7 @@ export default function MobilePage({ initialTab }: MobilePageProps = {}) {
       if (state === "open") {
         retryDelay = 800;
         setConnectionError(null);
+        void replayPendingApproval(runtimeSessionRef.current);
       } else if (state === "closed" || state === "error") {
         avatarRefreshGenerationRef.current += 1;
         setGatewayProfilesReady(false);
@@ -795,6 +1009,10 @@ export default function MobilePage({ initialTab }: MobilePageProps = {}) {
     });
 
     const offEvents = gateway.onAny((event: GatewayEvent) => {
+      if (event.type === "approval.request") {
+        handleApprovalEvent(event);
+        return;
+      }
       if (!MOBILE_ACTIVITY_EVENT_TYPES.has(event.type)) return;
       if (!runtimeSessionRef.current || event.session_id !== runtimeSessionRef.current) {
         return;
@@ -872,7 +1090,14 @@ export default function MobilePage({ initialTab }: MobilePageProps = {}) {
       window.removeEventListener("online", onOnline);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [gateway, invalidateAsyncSend, refreshSessions, syncSession]);
+  }, [
+    gateway,
+    handleApprovalEvent,
+    invalidateAsyncSend,
+    refreshSessions,
+    replayPendingApproval,
+    syncSession,
+  ]);
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
@@ -884,6 +1109,21 @@ export default function MobilePage({ initialTab }: MobilePageProps = {}) {
     return () => window.cancelAnimationFrame(frame);
   }, [reducedMotion, stream.messages, stream.streaming]);
 
+  useEffect(() => {
+    if (!approvalRequest || approvalRequest.sessionId !== runtimeSessionId) return;
+    const frame = window.requestAnimationFrame(() => {
+      approvalCardRef.current?.scrollIntoView({
+        behavior: reducedMotion ? "auto" : "smooth",
+        block: "center",
+      });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [approvalRequest, reducedMotion, runtimeSessionId]);
+
+  useEffect(() => {
+    if (approvalConfirmationKey) approvalConfirmationButtonRef.current?.focus();
+  }, [approvalConfirmationKey]);
+
   const handleProfileSelect = useCallback(
     (name: string) => {
       if (sessionBusy || stream.streaming || sending || stopping) return;
@@ -894,6 +1134,7 @@ export default function MobilePage({ initialTab }: MobilePageProps = {}) {
       const selectedSameProfile = name === selectedProfileRef.current;
       selectedProfileRef.current = name;
       invalidateAsyncSend();
+      clearApprovalPresentation();
       stoppingRuntimeRef.current = null;
       setStopping(false);
       streamRevisionRef.current += 1;
@@ -912,12 +1153,21 @@ export default function MobilePage({ initialTab }: MobilePageProps = {}) {
       setActiveTab("chat");
       if (selectedSameProfile) void syncSession();
     },
-    [invalidateAsyncSend, sending, sessionBusy, stopping, stream.streaming, syncSession],
+    [
+      clearApprovalPresentation,
+      invalidateAsyncSend,
+      sending,
+      sessionBusy,
+      stopping,
+      stream.streaming,
+      syncSession,
+    ],
   );
 
   const handleNewSession = useCallback(async () => {
     if (stream.streaming || stopping || connectionState !== "open") return;
     invalidateAsyncSend();
+    clearApprovalPresentation();
     stoppingRuntimeRef.current = null;
     setStopping(false);
     streamRevisionRef.current += 1;
@@ -939,12 +1189,28 @@ export default function MobilePage({ initialTab }: MobilePageProps = {}) {
     } finally {
       setSessionBusy(false);
     }
-  }, [connectionState, createSession, invalidateAsyncSend, stopping, stream.streaming]);
+  }, [
+    clearApprovalPresentation,
+    connectionState,
+    createSession,
+    invalidateAsyncSend,
+    stopping,
+    stream.streaming,
+  ]);
 
   const handleResume = useCallback(
     async (id: string) => {
       if (stream.streaming || connectionState !== "open") return;
       setActiveTab("chat");
+      invalidateAsyncSend();
+      clearApprovalPresentation();
+      stoppingRuntimeRef.current = null;
+      setStopping(false);
+      streamRevisionRef.current += 1;
+      runtimeSessionRef.current = null;
+      setRuntimeSessionId(null);
+      setStream(EMPTY_STREAM);
+      setActivity(createEmptyMobileActivityState());
       sessionModeRef.current = "explicit";
       sessionProfileRef.current = selectedProfileRef.current;
       setSessionMode("explicit");
@@ -960,7 +1226,13 @@ export default function MobilePage({ initialTab }: MobilePageProps = {}) {
         setSessionBusy(false);
       }
     },
-    [connectionState, resumeSession, stream.streaming],
+    [
+      clearApprovalPresentation,
+      connectionState,
+      invalidateAsyncSend,
+      resumeSession,
+      stream.streaming,
+    ],
   );
 
   const handleStop = useCallback(async () => {
@@ -993,6 +1265,7 @@ export default function MobilePage({ initialTab }: MobilePageProps = {}) {
     setStopping(true);
     try {
       await gateway.request("session.interrupt", { session_id: runtimeId });
+      clearApprovalPresentation();
     } catch (error) {
       if (stoppingRuntimeRef.current === runtimeId) {
         stoppingRuntimeRef.current = null;
@@ -1002,16 +1275,79 @@ export default function MobilePage({ initialTab }: MobilePageProps = {}) {
     }
   }, [
     connectionState,
+    clearApprovalPresentation,
     gateway,
     invalidateAsyncSend,
     sending,
     stopping,
   ]);
 
+  const respondToApproval = useCallback(
+    async (choice: MobileApprovalChoice) => {
+      const request = approvalRequestRef.current;
+      if (
+        !request ||
+        request.sessionId !== runtimeSessionRef.current ||
+        approvalRespondingChoice
+      ) {
+        return;
+      }
+      if (!request.choices.includes(choice)) return;
+      if (
+        choice === "always" &&
+        (!request.allowPermanent || !request.choices.includes("always"))
+      ) {
+        return;
+      }
+      if (choice === "always" && approvalConfirmationKey !== approvalIdentity(request)) {
+        setApprovalConfirmationKey(approvalIdentity(request));
+        return;
+      }
+
+      setApprovalRespondingChoice(choice);
+      try {
+        await gateway.request(
+          "approval.respond",
+          scopedParams(
+            {
+              choice,
+              ...(request.requestId ? { request_id: request.requestId } : {}),
+              session_id: request.sessionId,
+            },
+            selectedProfileRef.current,
+          ),
+        );
+        if (clearApprovalPresentation(request)) {
+          void replayPendingApproval(request.sessionId);
+        }
+      } catch (error) {
+        if (sameApprovalRequest(approvalRequestRef.current, request)) {
+          setApprovalRespondingChoice(null);
+          setApprovalError(errorMessage(error));
+        }
+      }
+    },
+    [
+      approvalConfirmationKey,
+      approvalRespondingChoice,
+      clearApprovalPresentation,
+      gateway,
+      replayPendingApproval,
+    ],
+  );
+
   const sendMessage = useCallback(async () => {
     const text = draft.trim();
     const file = pendingFile;
-    if ((!text && !file) || sending || stopping || stream.streaming) return;
+    if (
+      (!text && !file) ||
+      sending ||
+      stopping ||
+      stream.streaming ||
+      approvalRequestRef.current
+    ) {
+      return;
+    }
     if (connectionState !== "open") {
       setSessionError("Connect to the gateway before sending a message.");
       return;
@@ -1183,10 +1519,17 @@ export default function MobilePage({ initialTab }: MobilePageProps = {}) {
     "Bot-scoped Hermes agent";
   const selectedBotProvider = selectedProfileInfo?.provider?.trim() || "provider configured for bot";
   const online = connectionState === "open";
+  const approvalPending = Boolean(
+    approvalRequest &&
+      runtimeSessionId &&
+      approvalRequest.sessionId === runtimeSessionId,
+  );
   const statusText = !online
     ? connectionState === "connecting"
       ? "Connecting…"
       : "Offline"
+    : approvalPending
+      ? "Approval needed"
     : stopping
       ? "Stopping…"
     : sending
@@ -1198,12 +1541,20 @@ export default function MobilePage({ initialTab }: MobilePageProps = {}) {
           : "Ready";
 
   const submitDisabled =
-    !online || sending || stopping || stream.streaming || sessionBusy || (!draft.trim() && !pendingFile);
+    !online ||
+    approvalPending ||
+    sending ||
+    stopping ||
+    stream.streaming ||
+    sessionBusy ||
+    (!draft.trim() && !pendingFile);
   const activityIsLive =
+    approvalPending ||
     stream.streaming ||
     sending ||
     stopping ||
     activity.items.some((item) => item.state === "running");
+  const approvalKey = approvalRequest ? approvalIdentity(approvalRequest) : null;
 
   return (
     <div className="mobile-console" data-connection={online ? "online" : "offline"}>
@@ -1287,13 +1638,23 @@ export default function MobilePage({ initialTab }: MobilePageProps = {}) {
                 </div>
               </div>
 
-              {(stream.streaming || sending || stopping) && (
+              {(stream.streaming || sending || stopping || approvalPending) && (
                 <div className="mobile-console__activity" role="status" aria-live="polite">
                   <span className="mobile-console__activity-pulse" aria-hidden="true" />
                   <strong>
-                    {stopping ? "Stopping…" : sending ? "Sending…" : "Thinking…"}
+                    {approvalPending
+                      ? "Approval needed"
+                      : stopping
+                        ? "Stopping…"
+                        : sending
+                          ? "Sending…"
+                          : "Thinking…"}
                   </strong>
-                  <span>{selectedBotName} is working on this turn</span>
+                  <span>
+                    {approvalPending
+                      ? "Review the command below before continuing"
+                      : `${selectedBotName} is working on this turn`}
+                  </span>
                 </div>
               )}
 
@@ -1434,6 +1795,122 @@ export default function MobilePage({ initialTab }: MobilePageProps = {}) {
                 <div ref={transcriptEndRef} aria-hidden="true" />
               </div>
 
+              {approvalPending && approvalRequest && (
+                <section
+                  className="mobile-console__approval"
+                  data-testid="mobile-approval-card"
+                  ref={approvalCardRef}
+                  role="alert"
+                  aria-labelledby="mobile-approval-title"
+                >
+                  <div className="mobile-console__approval-heading">
+                    <CircleAlert aria-hidden="true" />
+                    <div>
+                      <p className="mobile-console__eyebrow">COMMAND APPROVAL</p>
+                      <h3 id="mobile-approval-title">Approval needed</h3>
+                    </div>
+                  </div>
+                  <p className="mobile-console__approval-description">
+                    {approvalRequest.description}
+                  </p>
+                  <pre className="mobile-console__approval-command">
+                    {approvalRequest.command || "Command details unavailable"}
+                  </pre>
+                  {approvalError && (
+                    <p
+                      className="mobile-console__approval-error"
+                      data-testid="mobile-approval-error"
+                      role="alert"
+                      aria-live="assertive"
+                    >
+                      {approvalError}
+                    </p>
+                  )}
+                  <div className="mobile-console__approval-actions">
+                    {approvalRequest.choices.includes("once") && (
+                      <button
+                        type="button"
+                        className="mobile-console__approval-primary"
+                        onClick={() => void respondToApproval("once")}
+                        disabled={!online || approvalRespondingChoice !== null}
+                      >
+                        {approvalRespondingChoice === "once" ? "Running…" : "Run once"}
+                      </button>
+                    )}
+                    {approvalRequest.choices.includes("session") && (
+                      <button
+                        type="button"
+                        className="mobile-console__approval-secondary"
+                        onClick={() => void respondToApproval("session")}
+                        disabled={!online || approvalRespondingChoice !== null}
+                      >
+                        {approvalRespondingChoice === "session"
+                          ? "Allowing…"
+                          : "Allow for session"}
+                      </button>
+                    )}
+                    {approvalRequest.allowPermanent &&
+                      approvalRequest.choices.includes("always") && (
+                        <button
+                          type="button"
+                          className="mobile-console__approval-secondary"
+                          onClick={() => void respondToApproval("always")}
+                          disabled={!online || approvalRespondingChoice !== null}
+                        >
+                          {approvalRespondingChoice === "always"
+                            ? "Allowing…"
+                            : "Always allow"}
+                        </button>
+                      )}
+                    {approvalRequest.choices.includes("deny") && (
+                      <button
+                        type="button"
+                        className="mobile-console__approval-reject"
+                        onClick={() => void respondToApproval("deny")}
+                        disabled={!online || approvalRespondingChoice !== null}
+                      >
+                        {approvalRespondingChoice === "deny" ? "Rejecting…" : "Reject"}
+                      </button>
+                    )}
+                  </div>
+                  {approvalKey === approvalConfirmationKey && (
+                    <div
+                      className="mobile-console__approval-confirm"
+                      role="alertdialog"
+                      aria-modal="false"
+                      aria-labelledby="mobile-approval-confirm-title"
+                    >
+                      <strong id="mobile-approval-confirm-title">
+                        Always allow this command?
+                      </strong>
+                      <p>
+                        This permanently allows matching commands for this bot. Confirm only if
+                        you trust this command.
+                      </p>
+                      <div className="mobile-console__approval-confirm-actions">
+                        <button
+                          type="button"
+                          className="mobile-console__approval-secondary"
+                          onClick={() => setApprovalConfirmationKey(null)}
+                          disabled={approvalRespondingChoice !== null}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          className="mobile-console__approval-reject"
+                          ref={approvalConfirmationButtonRef}
+                          onClick={() => void respondToApproval("always")}
+                          disabled={approvalRespondingChoice !== null}
+                        >
+                          Confirm always
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </section>
+              )}
+
               <form
                 className="mobile-console__composer"
                 onSubmit={(event: FormEvent<HTMLFormElement>) => {
@@ -1448,7 +1925,7 @@ export default function MobilePage({ initialTab }: MobilePageProps = {}) {
                     <button
                       type="button"
                       onClick={() => setPendingFile(null)}
-                      disabled={stopping}
+                      disabled={approvalPending || stopping}
                       aria-label={`Remove ${pendingFile.name}`}
                     >
                       <X aria-hidden="true" />
@@ -1462,7 +1939,7 @@ export default function MobilePage({ initialTab }: MobilePageProps = {}) {
                     placeholder={`Message ${selectedBotName}…`}
                     aria-label={`Message ${selectedBotName}`}
                     rows={2}
-                    disabled={!online || sessionBusy || stopping}
+                    disabled={!online || approvalPending || sessionBusy || stopping}
                   />
                   <div className="mobile-console__composer-actions">
                     <input
@@ -1477,12 +1954,12 @@ export default function MobilePage({ initialTab }: MobilePageProps = {}) {
                       type="button"
                       className="mobile-console__icon-button"
                       onClick={() => fileInputRef.current?.click()}
-                      disabled={!online || sessionBusy || sending || stopping}
+                      disabled={!online || approvalPending || sessionBusy || sending || stopping}
                       aria-label="Attach a file or photo"
                     >
                       <Paperclip aria-hidden="true" />
                     </button>
-                    {stream.streaming || sending || stopping ? (
+                    {stream.streaming || sending || stopping || approvalPending ? (
                       <button
                         type="button"
                         className="mobile-console__send-button mobile-console__send-button--stop"

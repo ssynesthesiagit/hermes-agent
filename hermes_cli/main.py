@@ -74,6 +74,33 @@ suppress_platform_ver_console()
 import os
 import sys
 
+
+def _bind_canonical_main_module() -> None:
+    """Make ``python -m hermes_cli.main`` a single module instance.
+
+    ``-m`` executes this file as ``__main__``.  Long-lived commands later
+    import helpers through ``hermes_cli.main``; without this alias Python
+    executes the file a second time under that package name.  The first pass
+    has already removed ``--profile`` from ``sys.argv``, so the second pass can
+    incorrectly follow the sticky ``active_profile`` file and mutate
+    ``HERMES_HOME`` underneath a running explicitly-scoped backend.
+    """
+    if __name__ != "__main__":
+        return
+
+    module = sys.modules.get(__name__)
+    package = sys.modules.get("hermes_cli")
+
+    if module is None:
+        return
+
+    sys.modules["hermes_cli.main"] = module
+    if package is not None:
+        setattr(package, "main", module)
+
+
+_bind_canonical_main_module()
+
 # ── Startup fast-path bootstrap ─────────────────────────────────────────
 # Two lines of inline path math so ``python hermes_cli/main.py`` (script
 # mode — sys.path[0] is hermes_cli/, not the repo root) can import the

@@ -87,6 +87,37 @@ function configureClipboard(writeText: (text: string) => Promise<void>) {
   });
 }
 
+function emitGatewayEvent(
+  event: { type: string; payload?: Record<string, unknown> },
+  sessionId = "runtime-canonical",
+) {
+  for (const handler of mocks.anyHandlers) {
+    handler({ ...event, session_id: sessionId });
+  }
+}
+
+async function renderChat() {
+  const { default: MobilePage } = await import("./MobilePage");
+  await render(
+    <MemoryRouter initialEntries={["/mobile?hermes_client=android-2"]}>
+      <MobilePage />
+    </MemoryRouter>,
+  );
+  await vi.waitFor(() =>
+    expect(container.querySelector("#mobile-chat-title")).not.toBeNull(),
+  );
+}
+
+function clickApprovalButton(label: string) {
+  const button = Array.from(
+    container.querySelectorAll<HTMLButtonElement>(
+      '[data-testid="mobile-approval-card"] button',
+    ),
+  ).find((candidate) => candidate.textContent === label);
+  if (!button) throw new Error(`Approval button not found: ${label}`);
+  button.click();
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
@@ -344,5 +375,523 @@ describe("MobilePage bot navigation", () => {
       }),
     );
     expect(container.querySelector('button[aria-label="Copy response"]')).toBeNull();
+  });
+});
+
+describe("MobilePage command approvals", () => {
+  async function waitForBoundSession() {
+    await vi.waitFor(() =>
+      expect(
+        mocks.request.mock.calls.some(([method]) => method === "session.history"),
+      ).toBe(true),
+    );
+  }
+
+  it("renders only the active-session request and acknowledges it with the selected profile", async () => {
+    await renderChat();
+    await waitForBoundSession();
+    mocks.request.mockClear();
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(Element.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
+
+    await act(async () =>
+      emitGatewayEvent(
+        {
+          type: "approval.request",
+          payload: {
+            allow_permanent: true,
+            choices: ["once", "session", "always", "deny", "unknown"],
+            command: "rm -rf /tmp/demo",
+            description: "Remove the demo directory",
+            request_id: "approval-1",
+          },
+        },
+        "background-session",
+      ),
+    );
+    expect(container.querySelector('[data-testid="mobile-approval-card"]')).toBeNull();
+
+    await act(async () =>
+      emitGatewayEvent({
+        type: "approval.request",
+        payload: {
+          allow_permanent: true,
+          choices: ["once", "session", "always", "deny", "unknown"],
+          command: "rm -rf /tmp/demo",
+          description: "Remove the demo directory",
+          request_id: "approval-1",
+        },
+      }),
+    );
+    await vi.waitFor(() =>
+      expect(container.querySelector('[data-testid="mobile-approval-card"]')).not.toBeNull(),
+    );
+    await vi.waitFor(() =>
+      expect(scrollIntoView).toHaveBeenCalledWith({
+        behavior: "smooth",
+        block: "center",
+      }),
+    );
+
+    const card = container.querySelector<HTMLElement>('[data-testid="mobile-approval-card"]');
+    expect(card?.textContent).toContain("Remove the demo directory");
+    expect(card?.textContent).toContain("rm -rf /tmp/demo");
+    expect(card?.textContent).toContain("Run once");
+    expect(card?.textContent).toContain("Allow for session");
+    expect(card?.textContent).toContain("Always allow");
+    expect(card?.textContent).toContain("Reject");
+    expect(
+      container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message Research Bot"]')
+        ?.disabled,
+    ).toBe(true);
+    expect(container.querySelector('button[aria-label="Stop response"]')).not.toBeNull();
+    await vi.waitFor(() =>
+      expect(mocks.request).toHaveBeenCalledWith("approval.received", {
+        profile: "research",
+        request_id: "approval-1",
+        session_id: "runtime-canonical",
+      }),
+    );
+  });
+
+  it("renders and accepts only the choices offered by the gateway", async () => {
+    await renderChat();
+    await waitForBoundSession();
+    mocks.request.mockClear();
+
+    await act(async () =>
+      emitGatewayEvent({
+        type: "approval.request",
+        payload: {
+          command: "echo deny",
+          description: "Deny-only request",
+          request_id: "approval-deny-only",
+          choices: ["deny"],
+        },
+      }),
+    );
+    await vi.waitFor(() =>
+      expect(container.querySelector('[data-testid="mobile-approval-card"]')).not.toBeNull(),
+    );
+    expect(container.textContent).toContain("Reject");
+    expect(container.textContent).not.toContain("Run once");
+    expect(container.textContent).not.toContain("Allow for session");
+    expect(container.textContent).not.toContain("Always allow");
+    await act(async () => {
+      clickApprovalButton("Reject");
+    });
+    await vi.waitFor(() =>
+      expect(mocks.request).toHaveBeenCalledWith("approval.respond", {
+        choice: "deny",
+        profile: "research",
+        request_id: "approval-deny-only",
+        session_id: "runtime-canonical",
+      }),
+    );
+    expect(mocks.request).not.toHaveBeenCalledWith(
+      "approval.respond",
+      expect.objectContaining({ choice: "once" }),
+    );
+
+    await act(async () =>
+      emitGatewayEvent({
+        type: "approval.request",
+        payload: {
+          command: "echo once",
+          description: "Once-only request",
+          request_id: "approval-once-only",
+          choices: ["once"],
+        },
+      }),
+    );
+    await vi.waitFor(() =>
+      expect(container.querySelector('[data-testid="mobile-approval-card"]')).not.toBeNull(),
+    );
+    expect(container.textContent).toContain("Run once");
+    expect(container.textContent).not.toContain("Reject");
+    expect(container.textContent).not.toContain("Allow for session");
+    expect(container.textContent).not.toContain("Always allow");
+    await act(async () => {
+      clickApprovalButton("Run once");
+    });
+    await vi.waitFor(() =>
+      expect(mocks.request).toHaveBeenCalledWith("approval.respond", {
+        choice: "once",
+        profile: "research",
+        request_id: "approval-once-only",
+        session_id: "runtime-canonical",
+      }),
+    );
+    expect(mocks.request).not.toHaveBeenCalledWith(
+      "approval.respond",
+      expect.objectContaining({
+        choice: "deny",
+        request_id: "approval-once-only",
+      }),
+    );
+  });
+
+  it("responds to Run once and Reject with session, request, and profile routing", async () => {
+    await renderChat();
+    await waitForBoundSession();
+    mocks.request.mockClear();
+
+    await act(async () =>
+      emitGatewayEvent({
+        type: "approval.request",
+        payload: {
+          command: "touch /tmp/once",
+          description: "Create a marker",
+          request_id: "approval-once",
+          choices: ["once", "deny"],
+        },
+      }),
+    );
+    await vi.waitFor(() =>
+      expect(container.querySelector('[data-testid="mobile-approval-card"]')).not.toBeNull(),
+    );
+    await act(async () => {
+      clickApprovalButton("Run once");
+    });
+    await vi.waitFor(() =>
+      expect(mocks.request).toHaveBeenCalledWith("approval.respond", {
+        choice: "once",
+        profile: "research",
+        request_id: "approval-once",
+        session_id: "runtime-canonical",
+      }),
+    );
+    await vi.waitFor(() =>
+      expect(container.querySelector('[data-testid="mobile-approval-card"]')).toBeNull(),
+    );
+
+    await act(async () =>
+      emitGatewayEvent({
+        type: "approval.request",
+        payload: {
+          command: "touch /tmp/deny",
+          description: "Create another marker",
+          request_id: "approval-deny",
+          choices: ["once", "deny"],
+        },
+      }),
+    );
+    await vi.waitFor(() =>
+      expect(container.querySelector('[data-testid="mobile-approval-card"]')).not.toBeNull(),
+    );
+    await act(async () => {
+      clickApprovalButton("Reject");
+    });
+    await vi.waitFor(() =>
+      expect(mocks.request).toHaveBeenCalledWith("approval.respond", {
+        choice: "deny",
+        profile: "research",
+        request_id: "approval-deny",
+        session_id: "runtime-canonical",
+      }),
+    );
+  });
+
+  it("requires explicit confirmation for permanent approval and hides disallowed choices", async () => {
+    await renderChat();
+    await waitForBoundSession();
+    mocks.request.mockClear();
+
+    await act(async () =>
+      emitGatewayEvent({
+        type: "approval.request",
+        payload: {
+          allow_permanent: true,
+          choices: ["once", "session", "always", "deny"],
+          command: "chmod 700 /tmp/demo",
+          description: "Change demo permissions",
+          request_id: "approval-always",
+        },
+      }),
+    );
+    await vi.waitFor(() =>
+      expect(container.querySelector('[data-testid="mobile-approval-card"]')).not.toBeNull(),
+    );
+    await act(async () => {
+      clickApprovalButton("Always allow");
+    });
+    expect(mocks.request).not.toHaveBeenCalledWith(
+      "approval.respond",
+      expect.objectContaining({ choice: "always" }),
+    );
+    expect(container.textContent).toContain("Always allow this command?");
+    await vi.waitFor(() =>
+      expect(document.activeElement?.textContent).toBe("Confirm always"),
+    );
+    await act(async () => {
+      clickApprovalButton("Confirm always");
+    });
+    await vi.waitFor(() =>
+      expect(mocks.request).toHaveBeenCalledWith("approval.respond", {
+        choice: "always",
+        profile: "research",
+        request_id: "approval-always",
+        session_id: "runtime-canonical",
+      }),
+    );
+
+    await act(async () =>
+      emitGatewayEvent({
+        type: "approval.request",
+        payload: {
+          allow_permanent: true,
+          choices: ["once", "session", "always", "deny"],
+          command: "chmod 700 /tmp/smart",
+          description: "Smart denied command",
+          request_id: "approval-smart",
+          smart_denied: true,
+        },
+      }),
+    );
+    await vi.waitFor(() =>
+      expect(container.querySelector('[data-testid="mobile-approval-card"]')).not.toBeNull(),
+    );
+    expect(container.textContent).not.toContain("Allow for session");
+    expect(container.textContent).not.toContain("Always allow");
+  });
+
+  it("keeps the card when approval RPC fails", async () => {
+    await renderChat();
+    await waitForBoundSession();
+    let responseAttempts = 0;
+    mocks.request.mockImplementation(async (method: string) => {
+      if (method === "approval.respond") {
+        responseAttempts += 1;
+        if (responseAttempts === 1) throw new Error("approval RPC failed");
+      }
+      return {};
+    });
+
+    await act(async () =>
+      emitGatewayEvent({
+        type: "approval.request",
+        payload: {
+          command: "echo live",
+          description: "Live request",
+          request_id: "approval-live",
+          choices: ["once", "deny"],
+        },
+      }),
+    );
+    await vi.waitFor(() =>
+      expect(container.querySelector('[data-testid="mobile-approval-card"]')).not.toBeNull(),
+    );
+    await act(async () => {
+      clickApprovalButton("Run once");
+    });
+    await vi.waitFor(() =>
+      expect(container.querySelector('[data-testid="mobile-approval-error"]')?.textContent).toBe(
+        "approval RPC failed",
+      ),
+    );
+    expect(container.querySelector('[data-testid="mobile-approval-card"]')).not.toBeNull();
+    expect(
+      container.querySelector<HTMLButtonElement>(
+        '[data-testid="mobile-approval-card"] button',
+      )?.disabled,
+    ).toBe(false);
+
+    await act(async () => {
+      clickApprovalButton("Run once");
+    });
+    await vi.waitFor(() =>
+      expect(container.querySelector('[data-testid="mobile-approval-card"]')).toBeNull(),
+    );
+    expect(container.querySelector('[data-testid="mobile-approval-error"]')).toBeNull();
+  });
+
+  it("clears approval failure text when a different request replaces it", async () => {
+    await renderChat();
+    await waitForBoundSession();
+    mocks.request.mockImplementation(async (method: string) => {
+      if (method === "approval.respond") throw new Error("approval RPC failed");
+      return {};
+    });
+
+    await act(async () =>
+      emitGatewayEvent({
+        type: "approval.request",
+        payload: {
+          command: "echo first",
+          description: "First request",
+          request_id: "approval-first",
+          choices: ["once"],
+        },
+      }),
+    );
+    await vi.waitFor(() =>
+      expect(container.querySelector('[data-testid="mobile-approval-card"]')).not.toBeNull(),
+    );
+    await act(async () => {
+      clickApprovalButton("Run once");
+    });
+    await vi.waitFor(() =>
+      expect(container.querySelector('[data-testid="mobile-approval-error"]')).not.toBeNull(),
+    );
+
+    await act(async () =>
+      emitGatewayEvent({
+        type: "approval.request",
+        payload: {
+          command: "echo second",
+          description: "Second request",
+          request_id: "approval-second",
+          choices: ["once"],
+        },
+      }),
+    );
+    await vi.waitFor(() => expect(container.textContent).toContain("Second request"));
+    expect(container.querySelector('[data-testid="mobile-approval-error"]')).toBeNull();
+  });
+
+  it("restores pending approvals after reconnect without replacing a newer live request", async () => {
+    await renderChat();
+    await waitForBoundSession();
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(Element.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
+    mocks.request.mockImplementation(async (method: string) => {
+      if (method === "approval.pending") {
+        return {
+          approvals: [
+            {
+              command: "echo replay",
+              description: "Replayed request",
+              request_id: "approval-replay",
+              choices: ["once", "deny"],
+            },
+          ],
+        };
+      }
+      return {};
+    });
+    for (const handler of mocks.stateHandlers) {
+      await act(async () => handler("open"));
+    }
+    await vi.waitFor(() => expect(container.textContent).toContain("Replayed request"));
+    await vi.waitFor(() =>
+      expect(scrollIntoView).toHaveBeenCalledWith({
+        behavior: "smooth",
+        block: "center",
+      }),
+    );
+    expect(mocks.request).toHaveBeenCalledWith("approval.pending", {
+      profile: "research",
+      session_id: "runtime-canonical",
+    });
+
+    mocks.request.mockImplementation(async () => ({ approvals: [] }));
+    await act(async () => {
+      for (const handler of mocks.stateHandlers) handler("open");
+      emitGatewayEvent({
+        type: "approval.request",
+        payload: {
+          command: "echo newer",
+          description: "Newer live request",
+          request_id: "approval-newer",
+          choices: ["once", "deny"],
+        },
+      });
+    });
+    await vi.waitFor(() => expect(container.textContent).toContain("Newer live request"));
+    expect(container.textContent).not.toContain("Replayed request");
+  });
+
+  it("invalidates the old runtime before a delayed session resume", async () => {
+    let resolveResume: ((response: Record<string, unknown>) => void) | undefined;
+    const delayedResume = new Promise<Record<string, unknown>>((resolve) => {
+      resolveResume = resolve;
+    });
+    mocks.request.mockImplementation(
+      async (method: string, params: Record<string, unknown>) => {
+        if (method === "profiles.list") return { profiles: [PROFILE] };
+        if (method === "profiles.get_asset") return {};
+        if (method === "session.list") {
+          return {
+            sessions: [
+              {
+                id: "stored-target",
+                message_count: 0,
+                preview: "Target session",
+                started_at: 1,
+                title: "Target session",
+              },
+            ],
+          };
+        }
+        if (method === "session.create") {
+          return { session_id: "runtime-canonical", stored_session_id: "stored-canonical" };
+        }
+        if (method === "session.resume" && params.session_id === "stored-target") {
+          return delayedResume;
+        }
+        if (method === "session.resume") throw new Error("canonical session missing");
+        if (method === "session.history") return { messages: [] };
+        return {};
+      },
+    );
+
+    await renderChat();
+    await waitForBoundSession();
+    const sessionsTab = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(".mobile-console__tab"),
+    ).find((button) => button.textContent === "Sessions");
+    await act(async () => {
+      sessionsTab?.click();
+    });
+    await vi.waitFor(() =>
+      expect(container.querySelector<HTMLButtonElement>(".mobile-session-card")).not.toBeNull(),
+    );
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".mobile-session-card")?.click();
+    });
+    await vi.waitFor(() =>
+      expect(mocks.request).toHaveBeenCalledWith("session.resume", {
+        profile: "research",
+        session_id: "stored-target",
+        source: "mobile",
+      }),
+    );
+
+    await act(async () =>
+      emitGatewayEvent(
+        {
+          type: "approval.request",
+          payload: {
+            command: "echo old runtime",
+            description: "Must stay hidden",
+            request_id: "approval-old-runtime",
+            choices: ["once", "deny"],
+          },
+        },
+        "runtime-canonical",
+      ),
+    );
+    expect(container.querySelector('[data-testid="mobile-approval-card"]')).toBeNull();
+
+    await act(async () => {
+      resolveResume?.({
+        resumed: "stored-target",
+        session_id: "runtime-target",
+      });
+      await Promise.resolve();
+    });
+    await vi.waitFor(() =>
+      expect(mocks.request).toHaveBeenCalledWith("session.history", {
+        session_id: "runtime-target",
+      }),
+    );
+    expect(container.querySelector('[data-testid="mobile-approval-card"]')).toBeNull();
   });
 });

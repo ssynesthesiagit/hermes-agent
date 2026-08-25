@@ -2,6 +2,10 @@
 
 Recorded 2026-08-23 for branch `codex/yatima-custom`.
 
+The latest verified repository checkpoint before this documentation expansion is
+`e3f287e9af3b59a9d71cf80b0f4ea1f272aceb7e`. At the last fetch it was 4 commits
+ahead and 201 commits behind `upstream/main`; measure again before any update.
+
 ## Architecture
 
 - Windows and Ubuntu run full Hermes gateways and desktop applications.
@@ -64,3 +68,6 @@ source and test files in the verified Windows tree with zero mismatches.
 
 This is a development checkpoint, not a claim that every owner-facing flow is a
 finished release. Update this file whenever an acceptance gate changes.
+
+Repository source, a successful build, and deployment on Windows, Ubuntu or
+Android are distinct states. Future handoffs must state each one separately.
