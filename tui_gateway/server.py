@@ -11963,6 +11963,11 @@ def _stage_session_file_attachment(
 
     upload_dir = _desktop_attachment_dir(session)
     target = _unique_attachment_path(upload_dir, _sanitize_attachment_name(filename))
+    # Attachment staging is a file-write route too.  Keep it behind the same
+    # canonical Librarian policy as model tools so a profile rooted inside (or
+    # symlinked into) the library cannot use upload bytes as a mutation bypass.
+    from agent.canonical_path_policy import assert_attachment_destination_allowed
+    assert_attachment_destination_allowed(target)
     target.write_bytes(payload)
     return target.resolve(), True
 

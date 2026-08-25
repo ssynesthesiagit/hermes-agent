@@ -2433,6 +2433,12 @@ DEFAULT_CONFIG = {
     "security": {
         "allow_private_urls": False,  # Allow requests to private/internal IPs (for OpenWrt, proxies, VPNs)
         "redact_secrets": True,
+        # Absolute, non-symlink canonical Markdown roots owned by the dedicated
+        # Librarian service. Ordinary Hermes tools may read/query these roots
+        # but direct mutation is denied before tool execution. Installation
+        # writes the reviewed root into each profile; empty preserves unrelated
+        # deployments.
+        "canonical_library_roots": [],
         # Persisted acknowledgement for unattended model overrides whose tier
         # lets the vendor train on prompts/completions. The startup guard still
         # prints the full warning on every run and never bypasses cost guards.

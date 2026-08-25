@@ -1418,6 +1418,38 @@ def handle_function_call(
                 )
                 return result
 
+        # Dedicated Librarian defense in depth.  This runs after request
+        # middleware and plugin argument modification, but before approval or
+        # registry dispatch, so no ordinary profile/tool route can directly
+        # mutate configured canonical Markdown roots.  Reads and the five MCP
+        # Librarian tools remain available; administrative writes belong to the
+        # separate SO_PEERCRED-authenticated broker.
+        try:
+            from agent.canonical_path_policy import enforce_tool_path_policy
+
+            enforce_tool_path_policy(
+                function_name,
+                function_args,
+                task_id=task_id,
+            )
+        except PermissionError as _canonical_policy_err:
+            result = tool_error(str(_canonical_policy_err))
+            _emit_post_tool_call_hook(
+                function_name=function_name,
+                function_args=function_args,
+                result=result,
+                task_id=task_id,
+                session_id=session_id,
+                tool_call_id=tool_call_id,
+                turn_id=turn_id,
+                api_request_id=api_request_id,
+                status="blocked",
+                error_type="canonical_library_policy",
+                error_message=str(_canonical_policy_err),
+                middleware_trace=list(_tool_middleware_trace),
+            )
+            return result
+
         # ACP/Zed edit approval runs before any file mutation.  The requester
         # is bound via ContextVar only for ACP sessions, so CLI/gateway paths
         # are unaffected when it is unset.
