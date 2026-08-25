@@ -106,3 +106,20 @@ it. The Telegram gateways were not the cause: `brain`, `dungeon-master`, and
   the profile's private `gateway-service` directory, then restart only the
   `dungeon-master` gateway. Restoring 8642 will intentionally recreate the
   collision while `brain` is using that port.
+
+## Recurrence: 2026-08-25 phone page unavailable
+
+- Symptom: the Android client reported that the webpage was unavailable when
+  using the saved Windows gateway.
+- Diagnosis: both Tailscale nodes were online, Ubuntu `/mobile` returned the
+  healthy HTTP 302 authentication redirect, and both Hermes backend health
+  endpoints returned HTTP 200. Windows alone had no listener on port 9119;
+  `Hermes_Dashboard` was `Ready` rather than running and recorded exit
+  `0xC000013A`, consistent with its prior process being interrupted.
+- Recovery: started only the existing `Hermes_Dashboard` Scheduled Task. No
+  task definition, source, build, gateway, backend, profile, or Android package
+  was changed.
+- Verification: after startup and a stability delay, the Windows task remained
+  running, port 9119 remained bound to the Windows Tailscale address, and both
+  Windows and Ubuntu `/mobile` returned HTTP 302. The existing Windows gateway
+  listener and HTTP 200 health response remained uninterrupted.
