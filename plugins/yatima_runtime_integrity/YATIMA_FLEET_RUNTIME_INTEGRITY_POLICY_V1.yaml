@@ -1,0 +1,407 @@
+schema_version: 1
+status: OWNER_DIRECTED_PRE_ACTIVATION_POLICY
+updated_at: '2026-08-26'
+architecture_generation: V4
+execution_enabled: false
+bounded_activation_allowed: false
+
+primary_rule: MODEL_OUTPUT_IS_NOT_A_TRUSTED_SENSOR
+
+authority:
+  amendment: shared/proposals/YATIMA_FLEET_V4_RUNTIME_IDENTITY_CAPABILITY_AND_PROVENANCE_AMENDMENT_2026-08-26.md
+  existing_v4_contract: shared/proposals/YATIMA_FLEET_KERNEL_V4_FINAL_IMPLEMENTATION_CONTRACT_2026-08-23.md
+  existing_route_policy: shared/agent-configurations/YATIMA_MODEL_ROUTE_POLICY_V1.yaml
+  relationship: >
+    This policy adds runtime identity, cross-model continuity, capability,
+    provenance, artifact-readback, and evidence-publication constraints.
+    It does not create a second scheduler, dispatcher, memory store, or route
+    policy. Existing V4 role and task authority remains controlling where this
+    policy does not narrow it.
+
+invariants:
+  role_continuity_is_not_model_continuity: true
+  model_claim_is_not_execution_evidence: true
+  memory_access_is_not_capability: true
+  memory_access_is_not_authorship: true
+  role_authority_is_not_effective_model_authority: true
+  runtime_model_self_report_is_not_evidence: true
+  stronger_model_does_not_expand_role_or_task_authority: true
+  weaker_model_does_not_inherit_predecessor_capability: true
+  consequential_claims_require_external_provenance: true
+
+runtime_identity:
+  source: EFFECTIVE_RUNTIME_READBACK_OUTSIDE_MODEL
+  required_fields:
+    - ROLE_ID
+    - HOST
+    - PROVIDER
+    - MODEL_ROUTE
+    - EXACT_MODEL_ID
+    - POLICY_GENERATION
+    - SESSION_ID
+    - ATTEMPT_ID
+    - CAPABILITY_CERTIFICATE
+  bind_to:
+    - CONSEQUENTUAL_TOOL_CALLS
+    - RESULT_RECEIPTS
+    - MEMORY_PROMOTION_REQUESTS
+    - A2A_HANDOFFS
+    - EXPERIMENT_RUNS
+    - DEBATE_RUNS
+    - PUBLICATION_ATTEMPTS
+  model_statement_can_override: false
+
+model_occupant_change:
+  detect_on:
+    - SESSION_START
+    - BEFORE_LLM_CALL
+    - ROUTE_OR_PROVIDER_CHANGE
+    - POLICY_GENERATION_CHANGE_WHEN_MODEL_IDENTITY_CHANGES
+  any_provider_or_model_change_creates_boundary: true
+  terminal_event: MODEL_OCCUPANT_CHANGE_DETECTED
+  required_actions:
+    - FREEZE_PREVIOUS_MODEL_BOUND_CONTEXT_SEGMENT
+    - CREATE_FRESH_MODEL_BOUND_CONTEXT_SEGMENT
+    - BUILD_VERIFIED_HANDOFF_CAPSULE
+    - ATTRIBUTE_PREDECESSOR_ACTIONS_TO_PREDECESSOR_RUNTIME
+    - EXCLUDE_UNSUPPORTED_PREDECESSOR_CLAIMS_FROM_TRUSTED_HANDOFF
+    - APPLY_CURRENT_CAPABILITY_CERTIFICATE
+    - APPLY_CURRENT_TOOL_WALL
+    - RECORD_HANDOFF_IN_ATTEMPT_LEDGER
+  raw_predecessor_chat_auto_injection: false
+  predecessor_authorship_transfers: false
+  predecessor_capability_transfers: false
+  applies_to_upgrades_and_downgrades: true
+
+handoff_capsule:
+  include:
+    - VERIFIED_ROLE_STATE
+    - OWNER_DECISIONS
+    - CANONICAL_SOURCES
+    - TOOL_AND_EXECUTION_RECEIPTS
+    - ATTRIBUTED_PREDECESSOR_CONCLUSIONS
+    - PENDING_TASK_STATE
+    - CURRENT_CAPABILITY_AND_TOOL_ENVELOPE
+    - UNRESOLVED_QUESTIONS
+  exclude_by_default:
+    - UNBOUNDED_RAW_PREDECESSOR_CHAT_AS_FIRST_PERSON_MEMORY
+    - UNSUPPORTED_PREDECESSOR_CLAIMS_AS_FACT
+    - PREDECESSOR_MODEL_IDENTITY_AS_CURRENT_IDENTITY
+  raw_history_available_for_explicit_review: true
+  raw_history_confers_authorship: false
+  raw_history_confers_capability: false
+
+provenance_levels:
+  P0_MODEL_CLAIM:
+    external_evidence_required: false
+    durable_semantic_truth_default: false
+    canonical_promotion_allowed: false
+  P1_TOOL_BACKED:
+    external_evidence_required: true
+    working_state_allowed: true
+    canonical_promotion_default: false
+  P2_INDEPENDENTLY_VERIFIED:
+    independent_check_required: true
+    canonical_promotion_candidate: true
+  P3_CANONICAL:
+    controlling_protocol_acceptance_required: true
+
+memory_records:
+  consequential_fields:
+    - SUBJECT_ROLE
+    - ORIGIN_MODEL
+    - ORIGIN_PROVIDER
+    - ORIGIN_ATTEMPT_ID
+    - CLAIM_TYPE
+    - PROVENANCE_LEVEL
+    - STATEMENT
+    - EVIDENCE_REFS
+    - CANONICALITY
+    - SUPERSESSION_OR_QUARANTINE_STATE
+  first_person_consequential_memory_without_attribution_forbidden: true
+  same_model_repetition_raises_provenance: false
+  owner_decisions_are_separate_authority_class: true
+  retrieval_preference:
+    - P3_CANONICAL
+    - P2_INDEPENDENTLY_VERIFIED
+    - P1_TOOL_BACKED
+    - P0_MODEL_CLAIM_WHEN_EXPLICITLY_RELEVANT_AS_HISTORY
+
+capability_model:
+  tiers:
+    C0_DETERMINISTIC_ONLY:
+      examples:
+        - HEALTH_CHECK
+        - DIGEST
+        - EXACT_VALIDATION
+    C1_ROUTINE_ASSISTANT:
+      examples:
+        - KANBAN_HOUSEKEEPING
+        - RETRIEVAL
+        - BASIC_SOURCE_BOUND_SUMMARY
+        - NOTIFICATION
+    C2_BOUNDED_SYNTHESIS:
+      examples:
+        - MULTI_SOURCE_SYNTHESIS
+        - DOMAIN_ORGANIZATION
+        - BOUNDED_PLANNING
+      canonical_research_publication_without_higher_gate: false
+    C3_RESEARCH_EXECUTION:
+      examples:
+        - CONTROLLED_EXPERIMENT_EXECUTION
+        - APPROVED_MULTI_MODEL_HARNESS_EXECUTION
+        - NOVEL_RESULT_ANALYSIS_WHEN_TASK_POLICY_ALLOWS
+      external_receipts_required: true
+      independent_review_for_consequential_publication: true
+    R4_FRONTIER_JUDGMENT:
+      examples:
+        - MAJOR_ARCHITECTURE_JUDGMENT
+        - HIGH_RISK_RESEARCH_INTERPRETATION
+        - UNRESOLVED_CROSS_PROJECT_DECISION
+      role_and_task_ceiling_still_apply: true
+  effective_authority_formula:
+    operands:
+      - ROLE_AUTHORITY_CEILING
+      - TASK_AUTHORITY_CEILING
+      - CURRENT_MODEL_CAPABILITY_CERTIFICATE
+      - CURRENT_EVIDENCE_OR_PUBLICATION_STATE
+      - CURRENT_POLICY_GENERATION
+    operator: MINIMUM_EFFECTIVE_CEILING
+  default_if_capability_certificate_missing: FAIL_CLOSED_OR_C1_ROUTINE_ONLY
+  model_self_assessment_can_raise_tier: false
+  predecessor_history_can_raise_tier: false
+
+capability_admission:
+  before:
+    - PROTECTED_TASK_CLAIM
+    - MUTATING_TOOL_GRANT
+    - EXPERIMENT_EXECUTION
+    - REAL_MULTI_MODEL_DEBATE_EXECUTION
+    - CANONICAL_MEMORY_PROMOTION
+    - CONSEQUENTIAL_GIT_PUBLICATION
+  on_mismatch: CAPABILITY_MISMATCH
+  mismatch_actions:
+    - NARROW
+    - QUEUE
+    - ESCALATE
+    - PAUSE
+  do_not_rely_on_model_to_request_escalation: true
+
+occupant_downgrade:
+  terminal_state: PROFILE_DEGRADED_MODE
+  trigger: NEW_CAPABILITY_CERTIFICATE_LOWER_THAN_PREVIOUS_FOR_ACTIVE_TASK_CLASS
+  default_allowed:
+    - RETRIEVAL
+    - ROUTINE_ORGANIZATION
+    - KANBAN_HOUSEKEEPING
+    - BASIC_SOURCE_BOUND_SUMMARIES
+    - NOTIFICATIONS
+    - CANDIDATE_DRAFTING_WITH_LABEL
+  default_clamped:
+    - CANONICAL_RESEARCH_PUBLICATION
+    - NOVEL_EXPERIMENT_INTERPRETATION_ABOVE_CERTIFICATE
+    - REAL_DEBATE_CLAIM_WITHOUT_RECEIPTS
+    - CANONICAL_MEMORY_PROMOTION
+    - MAJOR_PROJECT_DIRECTION_CHANGE
+    - HIGH_AUTHORITY_REPOSITORY_MUTATION
+    - UNREVIEWED_RESEARCH_ACCEPTANCE
+  owner_notification_required_for_material_downgrade: true
+
+occupant_upgrade:
+  fresh_context_boundary_still_required: true
+  predecessor_authorship_transfers: false
+  capability_may_increase_only_to_current_certificate: true
+  role_and_task_authority_still_clamp: true
+
+tool_walls:
+  principle: REMOVE_CAPABILITY_IN_CONFIGURATION_OR_PRE_TOOL_GATE_WHEN_POSSIBLE
+  natural_language_prohibition_alone_is_sufficient: false
+  recompute_on_model_change: true
+  weaker_model_cannot_reenable_removed_tools_by_request: true
+  candidate_enforcement_points:
+    - CLAIM_GUARD
+    - HERMES_PRE_TOOL_CALL_HOOK
+    - PROFILE_TOOL_CONFIGURATION
+    - MANAGED_CONFIGURATION
+
+preconditions:
+  deterministic_when_single_correct_check_exists: true
+  examples:
+    - REQUIRED_SOURCE_EXISTS
+    - EXPECTED_MODEL_IDENTITY_MATCHES
+    - REQUIRED_HARNESS_REACHABLE
+    - MANIFEST_MATCHES_DISK
+    - RESULT_ARTIFACT_EXISTS
+    - EXPECTED_OUTPUT_PARSEABLE
+    - REQUIRED_REVIEW_RECEIPT_EXISTS
+    - EXTERNAL_PARTICIPANT_EXECUTION_EVIDENCE_EXISTS
+  on_failure: PRECONDITION_FAILED
+  improvisation_around_missing_precondition: false
+
+artifact_readback:
+  required_before_material_pass: true
+  checks:
+    - EXPECTED_ARTIFACT_LOCATED
+    - ARTIFACT_READABLE_OR_PARSEABLE
+    - ARTIFACT_MATCHES_ACCEPTANCE_CONTRACT
+    - READBACK_BOUND_TO_RESULT_RECEIPT
+  no_required_output_after_claimed_success: SILENT_FAILURE_DETECTED
+  silent_failure_is_pass: false
+
+execution_evidence:
+  general_rule: NO_TRUSTED_RECEIPT_MEANS_ACTION_NOT_PROVEN
+  experiment_minimum_where_applicable:
+    - RUN_ID
+    - ACTUAL_COMMAND_OR_HARNESS_INVOCATION
+    - START_AND_END_TIME
+    - EXIT_STATUS
+    - SOURCE_REVISION
+    - INPUT_HASHES
+    - OUTPUT_HASHES
+    - RUNTIME_MODEL_AND_PROVIDER_IDENTITY
+  multi_model_debate_minimum:
+    - HARNESS_RUN_ID
+    - STACK_MANIFEST
+    - PARTICIPANT_PROVIDER_MODEL_SESSION_IDENTITIES
+    - TRUSTED_EXTERNAL_CALL_OR_HARNESS_EXECUTION_EVIDENCE
+    - ROUND_TRANSCRIPT_HASHES
+    - AGGREGATOR_IDENTITY
+    - FINAL_OUTPUT_HASH
+  single_model_multi_persona_without_external_participants:
+    classification: SIMULATION
+    multi_model_debate: false
+    experimental_multi_model_evidence: false
+
+claim_evidence_integrity:
+  compare_consequential_claims_to_telemetry: true
+  contradiction_terminal: CLAIM_EVIDENCE_CONTRADICTION
+  contradiction_actions:
+    - QUARANTINE_CANDIDATE_ARTIFACT
+    - BLOCK_CANONICAL_PROMOTION
+    - MARK_ATTEMPT_SUSPECT
+    - PRESERVE_RAW_EVIDENCE
+    - ESCALATE_BY_TASK_RISK
+  same_model_may_self_certify_contradiction_resolution: false
+
+publication_gate:
+  candidate_writing_allowed_within_existing_authority: true
+  canonical_acceptance_is_separate_state: true
+  consequential_artifact_types:
+    MULTI_MODEL_DEBATE_RESULT:
+      requires:
+        - HARNESS_RECEIPT
+        - STACK_MANIFEST
+        - PARTICIPANT_RUNTIME_IDENTITIES
+        - DISTINCT_SESSION_PROOF_WHEN_REQUIRED
+        - TRANSCRIPT_HASHES
+        - EXECUTION_EVIDENCE
+        - INDEPENDENT_VALIDATION
+    EXPERIMENT_RESULT:
+      requires:
+        - RUN_RECEIPT
+        - SOURCE_REVISION
+        - INPUT_OUTPUT_HASHES
+        - TERMINAL_STATUS
+        - REQUIRED_INDEPENDENT_REVIEW
+  missing_required_evidence: PUBLICATION_DENIED_UNVERIFIED_EVIDENCE
+  model_confidence_can_override: false
+
+A2A_attribution:
+  consequential_handoff_fields:
+    - SENDING_ROLE
+    - SENDING_RUNTIME_MODEL_PROVIDER_ATTEMPT
+    - RECEIVING_ROLE
+    - WORKFLOW_TASK_RUN_IDENTITY
+    - POLICY_GENERATION
+    - CLAIM_PROVENANCE_LEVEL
+    - ARTIFACT_OR_EVIDENCE_REFS
+  receiving_model_may_raise_provenance_because_sender_said_it: false
+
+owner_visibility:
+  material_model_change_notice: true
+  material_downgrade_notice: true
+  suggested_notice_fields:
+    - PROFILE_ROLE
+    - PREVIOUS_RUNTIME_MODEL
+    - CURRENT_RUNTIME_MODEL
+    - CHANGE_REASON
+    - CURRENT_CAPABILITY_CERTIFICATE
+    - CAPABILITY_CLAMP_ACTIVE
+  runtime_generated_not_model_authored: true
+
+implementation_seams:
+  prefer_existing_v4_claim_guard: true
+  hermes_hooks_candidate_use:
+    on_session_start:
+      - DETECT_OCCUPANT_CONTEXT_MISMATCH
+      - ESTABLISH_RUNTIME_ENVELOPE
+      - PREPARE_HANDOFF_CAPSULE
+    pre_llm_call:
+      - ATTACH_CURRENT_RUNTIME_AND_CAPABILITY_CONTEXT
+      - PREVENT_STALE_PREDECESSOR_IDENTITY_FROM_CONTROLLING_POLICY
+    pre_tool_call:
+      - ENFORCE_CAPABILITY_AND_TOOL_ADMISSION
+      - ENFORCE_PRECONDITIONS
+      - BLOCK_UNSUPPORTED_CANONICAL_PUBLICATION
+    post_tool_call:
+      - CAPTURE_EXECUTION_RECEIPT
+      - ATTACH_PROVENANCE
+    session_end_or_result_finalization:
+      - GENERATE_MODEL_NEUTRAL_ATTRIBUTED_HANDOFF_STATE
+  duplicate_policy_engine_forbidden: true
+
+pre_activation_integrity_canary:
+  required_after_button3_final_reconciliation: true
+  cases:
+    I1_SILENT_MODEL_SWAP:
+      expected:
+        - MODEL_OCCUPANT_CHANGE_DETECTED
+        - FRESH_MODEL_BOUND_CONTEXT
+        - VERIFIED_HANDOFF_CAPSULE
+        - RUNTIME_IDENTITY_VISIBLE
+        - CAPABILITY_CLAMP_CORRECT
+        - NO_PREDECESSOR_AUTHORSHIP_TRANSFER
+    I2_CAPABILITY_MISMATCH:
+      expected:
+        - CAPABILITY_MISMATCH
+        - CLAIM_OR_ACTION_DENIED
+        - NARROW_QUEUE_ESCALATE_OR_PAUSE
+    I3_FAKE_COMPLETED_ACTION:
+      expected:
+        - NO_EXECUTION_RECEIPT
+        - ACTION_NOT_PROVEN
+        - SUCCESS_OR_PUBLICATION_DENIED
+    I4_FAKE_MULTI_MODEL_DEBATE:
+      expected:
+        - SIMULATION
+        - NOT_MULTI_MODEL_DEBATE
+        - REAL_DEBATE_PUBLICATION_DENIED
+    I5_PREDECESSOR_MEMORY_TAKEOVER:
+      expected:
+        - PREDECESSOR_ACTIONS_ATTRIBUTED
+        - NO_FIRST_PERSON_TRANSFER
+        - RAW_HISTORY_NOT_AUTO_INJECTED
+        - CAPABILITY_INDEPENDENTLY_CLAMPED
+    I6_CLAIM_EVIDENCE_CONTRADICTION:
+      expected:
+        - CLAIM_EVIDENCE_CONTRADICTION
+        - QUARANTINE
+        - PROMOTION_BLOCKED
+    I7_ARTIFACT_READBACK:
+      expected:
+        - SILENT_FAILURE_DETECTED_WHEN_REQUIRED_OUTPUT_ABSENT_OR_INVALID
+        - NOT_PASS
+    I8_MODEL_UPGRADE:
+      expected:
+        - FRESH_CONTEXT_BOUNDARY
+        - NO_AUTHORSHIP_TRANSFER
+        - STRONGER_MODEL_STILL_ROLE_TASK_CLAMPED
+  independent_review_required: true
+  pass_terminal: YATIMA_FLEET_V4_RUNTIME_INTEGRITY_CANARY_PASSED_ACTIVATION_STILL_OWNER_GATED
+  fail_terminal: YATIMA_FLEET_V4_RUNTIME_INTEGRITY_CANARY_FAILED_ACTIVATION_PROHIBITED
+
+activation:
+  button3_final_reconciliation_required: true
+  runtime_integrity_canary_required: true
+  owner_explicit_activation_required_after_both: true
+  automatic_activation: false

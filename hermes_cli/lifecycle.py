@@ -8,6 +8,10 @@ from typing import Any, List
 logger = logging.getLogger(__name__)
 
 
+class SessionFinalizationBlocked(RuntimeError):
+    """A fail-closed plugin denied material session finalization."""
+
+
 def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     """Notify first-party observers, then invoke compatibility plugin hooks."""
     try:
@@ -38,13 +42,30 @@ def has_hook(hook_name: str) -> bool:
 
 
 def finalize_session(**kwargs: Any) -> List[Any]:
-    """Notify observers and hard-close one core-owned Relay conversation."""
+    """Run finalization gates, then hard-close one core-owned Relay conversation."""
     try:
         from hermes_cli.observability import observe_lifecycle
 
         observe_lifecycle("on_session_finalize", **kwargs)
     except Exception:
         logger.warning("Built-in observability hook failed", exc_info=True)
+
+    from hermes_cli import plugins
+
+    plugin_results = plugins.invoke_hook("on_session_finalize", **kwargs)
+    denials = [
+        result
+        for result in plugin_results
+        if isinstance(result, dict) and result.get("allowed") is False
+    ]
+    if denials:
+        events = ",".join(
+            str(result.get("event") or "FINALIZATION_DENIED")
+            for result in denials
+        )
+        raise SessionFinalizationBlocked(
+            f"Session finalization blocked by integrity gate: {events}"
+        )
 
     session_id = str(kwargs.get("session_id") or "")
     if session_id:
@@ -58,6 +79,4 @@ def finalize_session(**kwargs: Any) -> List[Any]:
         except Exception:
             logger.warning("Core Relay session finalization failed", exc_info=True)
 
-    from hermes_cli import plugins
-
-    return plugins.invoke_hook("on_session_finalize", **kwargs)
+    return plugin_results

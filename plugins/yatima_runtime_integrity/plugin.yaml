@@ -1,0 +1,19 @@
+name: yatima-runtime-integrity
+kind: standalone
+version: 0.1.0
+description: "Opt-in Windows runtime identity, capability, provenance, and evidence adapter; disabled until explicitly enabled by the owner."
+author: NousResearch / Yatima
+provides_hooks:
+  - pre_tool_call
+  - post_tool_call
+  - on_session_finalize
+  - on_session_end
+hooks:
+  - pre_tool_call
+  - post_tool_call
+  - on_session_finalize
+  - on_session_end
+config_schema:
+  enabled: {type: bool, default: false, description: "Enable the owner-gated integrity canary layer."}
+  role_id: {type: str, default: "", description: "Persistent Fleet role identifier."}
+  policy_generation: {type: str, default: "", description: "Trusted runtime-integrity policy generation."}

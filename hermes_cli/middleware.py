@@ -7,6 +7,7 @@ contract helpers here so agent-loop call sites and plugins share one vocabulary.
 
 from __future__ import annotations
 
+import inspect
 import logging
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -32,6 +33,33 @@ VALID_MIDDLEWARE: set[str] = {
     LLM_REQUEST_MIDDLEWARE,
     LLM_EXECUTION_MIDDLEWARE,
 }
+
+
+class MiddlewareExecutionBlocked(RuntimeError):
+    """An explicit fail-closed middleware denial before terminal execution."""
+
+
+def _invoke_compatible(callback: Callable, payload: Dict[str, Any]) -> Any:
+    try:
+        parameters = inspect.signature(callback).parameters
+    except (TypeError, ValueError):
+        return callback(**payload)
+    if any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    ):
+        return callback(**payload)
+    accepted = {
+        name: value
+        for name, value in payload.items()
+        if name in parameters
+        and parameters[name].kind
+        in {
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        }
+    }
+    return callback(**accepted)
 
 
 @dataclass
@@ -297,9 +325,11 @@ def _run_execution_chain(
         call_kwargs[payload_key] = payload
         call_kwargs["next_call"] = next_call
         try:
-            return callback(**call_kwargs)
+            return _invoke_compatible(callback, call_kwargs)
         except _DownstreamExecutionError as exc:
             raise exc.original
+        except MiddlewareExecutionBlocked:
+            raise
         except Exception as exc:
             logger.warning(
                 "Middleware '%s' callback %s raised: %s",
@@ -318,10 +348,19 @@ def _run_execution_chain(
 
 def _trace_entry(result: Dict[str, Any]) -> Dict[str, Any]:
     entry: Dict[str, Any] = {}
-    for key in ("source", "reason", "name"):
+    for key in (
+        "source",
+        "reason",
+        "name",
+        "event",
+        "owner_notice",
+        "transition_sha256",
+    ):
         value = result.get(key)
         if isinstance(value, str) and value:
             entry[key] = value
+    if result.get("blocked") is True:
+        entry["blocked"] = True
     if not entry:
         entry["source"] = "plugin"
     return entry

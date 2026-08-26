@@ -2934,6 +2934,19 @@ def run_conversation(
                         provider=agent.provider,
                         base_url=agent.base_url,
                         api_mode=agent.api_mode,
+                        model_route=(
+                            getattr(agent, "model_route", "")
+                            or getattr(agent, "route", "")
+                            or ""
+                        ),
+                        requested_provider=(
+                            getattr(agent, "requested_provider", "") or ""
+                        ),
+                        runtime_agent=agent,
+                        current_user_message=original_user_message,
+                        runtime_notice_callback=getattr(
+                            agent, "_emit_status", None
+                        ),
                         api_call_count=api_call_count,
                     )
                     api_kwargs = _llm_request_mw.payload
@@ -2942,6 +2955,25 @@ def run_conversation(
                 except Exception:
                     _original_api_kwargs = dict(api_kwargs)
                     _llm_middleware_trace = []
+
+                _runtime_integrity_block = next(
+                    (
+                        entry
+                        for entry in _llm_middleware_trace
+                        if isinstance(entry, dict) and entry.get("blocked") is True
+                    ),
+                    None,
+                )
+                if _runtime_integrity_block is not None:
+                    from agent.runtime_integrity import RuntimeIntegrityViolation
+
+                    raise RuntimeIntegrityViolation(
+                        str(
+                            _runtime_integrity_block.get("owner_notice")
+                            or _runtime_integrity_block.get("event")
+                            or "RUNTIME_IDENTITY_ATTESTATION_FAILED"
+                        )
+                    )
 
                 try:
                     from hermes_cli.lifecycle import (
@@ -3149,6 +3181,7 @@ def run_conversation(
                         provider=agent.provider,
                         base_url=agent.base_url,
                         api_mode=agent.api_mode,
+                        runtime_agent=agent,
                         api_call_count=api_call_count,
                         middleware_trace=list(_llm_middleware_trace),
                     )

@@ -5144,6 +5144,16 @@ class PluginManager:
                     getattr(cb, "__name__", repr(cb)),
                     exc,
                 )
+                if hook_name == "pre_tool_call":
+                    tool_name = str(kwargs.get("tool_name") or "")
+                    results.append(
+                        {
+                            "action": "block",
+                            "message": (
+                                f"Tool '{tool_name}' blocked: pre_tool_call policy hook failed"
+                            ),
+                        }
+                    )
         return results
 
     def _subscribe_event(
@@ -5456,7 +5466,7 @@ class PluginManager:
         results: List[Any] = []
         for cb in callbacks:
             try:
-                ret = cb(**kwargs)
+                ret = self._invoke_hook_callback(cb, kwargs)
                 if ret is not None:
                     results.append(ret)
             except Exception as exc:
@@ -6057,16 +6067,13 @@ def _get_pre_tool_call_directive_details(
     )
 
     block_msg: Optional[str] = None
+    approval: Optional[_PreToolCallDirective] = None
     modified_args: Optional[Dict[str, Any]] = None
 
     for result in hook_results:
         if not isinstance(result, dict):
             continue
         # "modify" action — transform tool_input before dispatch.
-        # Processed before the block/approve gate so modify directives
-        # are visible even when a later hook blocks. Hooks accumulate:
-        # each modify directive shallow-merges its keys into one
-        # accumulated dict built from the original args on first hit.
         if result.get("action") == "modify":
             partial = result.get("args")
             if isinstance(partial, dict) and partial:
@@ -6079,19 +6086,34 @@ def _get_pre_tool_call_directive_details(
             continue
         message = result.get("message")
         message = message if isinstance(message, str) and message else None
-        # A block directive requires a message (it becomes the tool result);
-        # an approve directive can carry an optional reason.
         if action == "block" and not message:
             continue
         rule_key = result.get("rule_key") if action == "approve" else None
         rule_key = rule_key.strip() if isinstance(rule_key, str) else None
         if not rule_key:
             rule_key = None
-        return _PreToolCallDirective(
-            action=action, message=message, rule_key=rule_key,
+        directive = _PreToolCallDirective(
+            action=action,
+            message=message,
+            rule_key=rule_key,
             modified_args=modified_args,
         )
+        if action == "block":
+            block_msg = message
+        elif approval is None:
+            approval = directive
 
+    if block_msg is not None:
+        return _PreToolCallDirective(
+            action="block", message=block_msg, modified_args=modified_args
+        )
+    if approval is not None:
+        return _PreToolCallDirective(
+            action=approval.action,
+            message=approval.message,
+            rule_key=approval.rule_key,
+            modified_args=modified_args,
+        )
     return _PreToolCallDirective(modified_args=modified_args)
 
 
