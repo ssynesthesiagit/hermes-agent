@@ -5,6 +5,7 @@ import test from 'node:test'
 import vm from 'node:vm'
 
 const pluginSource = readFileSync(new URL('../plugin.js', import.meta.url), 'utf8')
+const POSIX_SHELL = process.platform === 'win32' ? 'bash' : 'sh'
 
 function load(request = async () => ({ jobs: [] })) {
   const values = new Map()
@@ -58,7 +59,7 @@ test('security: delegated routine arguments remain literal shell values', () => 
   const prompt = __routines.routinePrompt('research', title, instruction, 'default')
   const command = prompt.slice(prompt.indexOf('hermes '), prompt.lastIndexOf('\n\nIf the command'))
   const script = `hermes() { printf '%s\\037' "$@"; }\n${command}`
-  const result = spawnSync('sh', ['-c', script], { encoding: 'utf8' })
+  const result = spawnSync(POSIX_SHELL, [], { input: script, encoding: 'utf8' })
 
   assert.equal(result.status, 0, result.stderr)
   assert.deepEqual(result.stdout.split('\x1f').slice(0, -1), [
@@ -138,7 +139,7 @@ test('security: upgrade pauses persisted delegated routines before they can exec
   assert.equal(runtime.__routines.isLegacyDelegatedRoutine({ ...persisted, prompt_preview: recreated.slice(0, 100) }), false)
   const command = recreated.slice(recreated.indexOf('hermes '), recreated.lastIndexOf('\n\nIf the command'))
   const script = `hermes() { printf '%s\\037' "$@"; }\n${command}`
-  const executed = spawnSync('sh', ['-c', script], { encoding: 'utf8' })
+  const executed = spawnSync(POSIX_SHELL, [], { input: script, encoding: 'utf8' })
   assert.equal(executed.status, 0, executed.stderr)
   assert.deepEqual(executed.stdout.split('\x1f').slice(0, -1), [
     '-p',
@@ -160,12 +161,12 @@ test('robustness: routine input rejects NUL before cron creation', () => {
   assert.match(__routines.routineInputError('Normal title', 'Bad\0instruction'), /NUL.*U\+0000/)
   assert.match(
     pluginSource,
-    /const inputError = routineInputError\(title, task\)[\s\S]*if \(inputError\)[\s\S]*setError\(inputError\)[\s\S]*return[\s\S]*host\.request\('cron\.manage'/
+    /const inputError = routineInputError\(title, task\)[\s\S]*if \(inputError\)[\s\S]*setError\(inputError\)[\s\S]*return[\s\S]*requestForBot\(bot, 'cron\.manage'/
   )
 })
 
 test('regression: Create Cronjob passes the active profile to routinePrompt', () => {
-  assert.match(pluginSource, /prompt: routinePrompt\(bot, title, task, activeProfile\)/)
+  assert.match(pluginSource, /prompt: routinePrompt\(profile, title, task, activeProfile\)/)
   const { __routines } = load()
   const instruction = 'Keep "quoted" output intact'
   assert.equal(__routines.routinePrompt('ops', 'Check', instruction, 'ops'), instruction)

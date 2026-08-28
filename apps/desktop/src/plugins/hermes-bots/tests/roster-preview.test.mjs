@@ -89,7 +89,7 @@ test('generatedSessionTitle: caps the generated label length', () => {
 
 // ── render smoke: BotRow must paint the new row furniture without throwing ──
 
-function renderRuntime() {
+function renderRuntime({ remoteSessions = [{ id: 'remote-pin', title: 'Bot Chat', message_count: 2 }] } = {}) {
   const atom = value => ({ get: () => value, set: () => undefined })
   const jsx = (type, props = {}) => ({ type, props })
   const opened = []
@@ -97,6 +97,9 @@ function renderRuntime() {
   const routedRequests = []
   const ensured = []
   const mainOpened = []
+  const profileSessionsOpened = []
+  const notifyErrors = []
+  let profileSessionsFailure = null
   const context = {
     atom,
     jsx,
@@ -110,6 +113,7 @@ function renderRuntime() {
     ContextMenuItem: 'ContextMenuItem',
     ContextMenuSeparator: 'ContextMenuSeparator',
     ContextMenuTrigger: 'ContextMenuTrigger',
+    Tip: 'Tip',
     haptic: () => undefined,
     host: {
       state: {
@@ -118,10 +122,15 @@ function renderRuntime() {
       },
       request: (...args) => {
         activeRequests.push(args)
-        return Promise.resolve({ sessions: [] })
+        return args[0] === 'session.list'
+          ? Promise.resolve({ sessions: [{ id: 'canonical-1', title: 'Bot Chat', message_count: 2 }] })
+          : Promise.resolve({ sessions: [] })
       },
       requestProfile: async (route, method, params) => {
         routedRequests.push([route, method, params])
+        if (method === 'session.list') {
+          return { sessions: remoteSessions }
+        }
         if (method === 'profiles.list') {
           return {
             profiles: [{
@@ -134,6 +143,11 @@ function renderRuntime() {
       },
       ensureAgent: async (...args) => ensured.push(args),
       openSession: (...args) => mainOpened.push(args),
+      openProfileSessions: (...args) => {
+        profileSessionsOpened.push(args)
+        return profileSessionsFailure ? Promise.reject(profileSessionsFailure) : Promise.resolve()
+      },
+      notifyError: (...args) => notifyErrors.push(args),
       openSessionWindow: (...args) => {
         opened.push(args)
         return Promise.resolve({ ok: true })
@@ -164,6 +178,11 @@ function renderRuntime() {
   context.routedRequests = routedRequests
   context.ensured = ensured
   context.mainOpened = mainOpened
+  context.profileSessionsOpened = profileSessionsOpened
+  context.notifyErrors = notifyErrors
+  context.failProfileSessions = error => {
+    profileSessionsFailure = error
+  }
   return context
 }
 
@@ -203,12 +222,12 @@ const DM_BOT = {
   }
 }
 
-test('render: BotRow shows the sender badge and stripped DM preview', () => {
+test('render: BotRow shows a clean stripped DM preview without delivery furniture', () => {
   const r = renderRuntime()
   const tree = r.__BotRow({ bot: DM_BOT, onEdit: () => undefined })
   const text = textOf(tree)
-  assert.match(text, /@manager/)
   assert.match(text, /Learn-share/)
+  assert.doesNotMatch(text, /@manager/)
   assert.doesNotMatch(text, /Message from/)
 })
 
@@ -230,10 +249,11 @@ test('render: BotRow tolerates a fresh bot with no sessions yet', () => {
   const r = renderRuntime()
   const tree = r.__BotRow({ bot: { name: 'newbie', title: '', description: 'Fresh bot' }, onEdit: () => undefined })
   const text = textOf(tree)
-  assert.match(text, /Fresh bot/)
+  assert.match(text, /Newbie/)
+  assert.doesNotMatch(text, /No conversations yet/)
 })
 
-test('render: a remote gateway name is not squeezed out by its handle', () => {
+test('render: a remote default uses its gateway identity without repeating it', () => {
   const r = renderRuntime()
   const tree = r.__BotRow({
     bot: {
@@ -246,18 +266,16 @@ test('render: a remote gateway name is not squeezed out by its handle', () => {
     onEdit: () => undefined
   })
   const name = findNode(tree, node => node.type === 'span' && textOf(node) === 'Studio over SSH')
-  const handle = findNode(tree, node => node.type === 'span' && textOf(node) === '@default-studio-over-ssh')
+  const button = findNode(tree, node => node.type === 'button' && node.props?.['aria-label'])
 
   assert.ok(name)
-  assert.match(name.props.className, /shrink-0/)
-  assert.ok(handle)
-  assert.match(handle.props.className, /min-w-0/)
-  assert.match(handle.props.className, /truncate/)
-  assert.doesNotMatch(handle.props.className, /shrink-0/)
+  assert.ok(button)
+  assert.match(button.props['aria-label'], /Studio over SSH/)
+  assert.equal((textOf(button).match(/Studio over SSH/g) || []).length, 1)
 })
 
-test('render: BotRow previews the pinned canonical chat, not an unrelated latest session', () => {
-  // hermes-agent#88200: the row opens the pinned chat on click, so the
+test('render: BotRow previews the canonical chat, not an unrelated latest session', () => {
+  // hermes-agent#88200: the row opens the canonical chat on click, so the
   // preview must describe that same session — not the profile's most recent
   // (but unrelated) activity.
   const r = renderRuntime()
@@ -267,12 +285,12 @@ test('render: BotRow previews the pinned canonical chat, not an unrelated latest
       title: 'Ops',
       description: '',
       last_session: { id: 'scratch9', title: 'Scratch', preview: 'unrelated scratch content', last_active: 1_800_000_000 },
-      preferred_session: { id: 'pinned1', resolved_id: 'pinned1', title: 'Bot Chat', preview: 'pinned chat content', started_at: 1, last_active: 1_700_000_000, message_count: 5 }
+      canonical_session: { id: 'canonical1', resolved_id: 'canonical1', title: 'Bot Chat', preview: 'canonical chat content', started_at: 1, last_active: 1_700_000_000, message_count: 5 }
     },
     onEdit: () => undefined
   })
   const text = textOf(tree)
-  assert.match(text, /pinned chat content/)
+  assert.match(text, /canonical chat content/)
   assert.doesNotMatch(text, /unrelated scratch content/)
 })
 
@@ -293,7 +311,6 @@ test('behavior: rich local BotRow exposes a focused Bot Chat popout action', asy
       name: 'ops',
       title: 'Ops',
       description: '',
-      preferred_session: { id: 'canonical-1', title: 'Bot Chat', preview: 'hello', message_count: 2 }
     },
     onEdit: () => undefined
   })
@@ -304,6 +321,33 @@ test('behavior: rich local BotRow exposes a focused Bot Chat popout action', asy
   await action.props.onSelect()
   await new Promise(resolve => setTimeout(resolve, 0))
   assert.deepEqual(JSON.parse(JSON.stringify(r.opened)), [['canonical-1', { profile: 'ops' }]])
+})
+
+test('behavior: rich local BotRow opens owning profile Sessions and reports failures', async () => {
+  const r = renderRuntime()
+  const tree = r.__BotRow({
+    bot: {
+      name: 'ops',
+      title: 'Ops',
+      description: '',
+      connectionId: 'tailnet-a',
+      connectionLabel: 'Tailnet A'
+    },
+    onEdit: () => undefined
+  })
+  const menu = tree.props.children.find(child => child?.type === 'ContextMenuContent')
+  const action = menu?.props?.children?.find(child => child?.props?.children === 'Sessions')
+
+  assert.equal(typeof action?.props?.onSelect, 'function')
+  const failure = new Error('sessions unavailable')
+  r.failProfileSessions(failure)
+  action.props.onSelect()
+  await new Promise(resolve => setTimeout(resolve, 0))
+
+  assert.deepEqual(JSON.parse(JSON.stringify(r.profileSessionsOpened)), [['tailnet-a', 'ops']])
+  assert.equal(r.notifyErrors.length, 1)
+  assert.equal(r.notifyErrors[0][0], failure)
+  assert.match(r.notifyErrors[0][1], /sessions/i)
 })
 
 test('behavior: source-scoped BotRow pops out through its source without foregrounding or ensuring the main agent', async () => {
@@ -317,7 +361,6 @@ test('behavior: source-scoped BotRow pops out through its source without foregro
       connectionLabel: 'Tailnet A',
       remoteSource: true,
       sourceScoped: true,
-      preferred_session: { id: 'remote-pin', title: 'Bot Chat', preview: 'hello', message_count: 2 }
     },
     onEdit: () => undefined
   })
@@ -334,6 +377,78 @@ test('behavior: source-scoped BotRow pops out through its source without foregro
   assert.equal(r.ensured.length, 0)
   assert.equal(r.mainOpened.length, 0)
   assert.equal(r.activeRequests.length, 0)
+  assert.equal(r.routedRequests.length, 1)
   assert.equal(r.routedRequests[0][0].connectionId, 'tailnet-a')
-  assert.equal(r.routedRequests[0][1], 'profiles.list')
+  assert.equal(r.routedRequests[0][1], 'session.list')
+})
+
+test('behavior: source-scoped popout separates Desktop profile routing from its backend target', async () => {
+  const r = renderRuntime()
+  const tree = r.__BotRow({
+    bot: {
+      name: 'ops',
+      title: 'Ops',
+      description: '',
+      connectionId: 'tailnet-a',
+      connectionLabel: 'Tailnet A',
+      remoteSource: true,
+      sourceScoped: true,
+      route: {
+        connectionId: 'tailnet-a',
+        mode: 'remote',
+        profile: 'worker',
+        targetProfile: 'backend-worker'
+      }
+    },
+    onEdit: () => undefined
+  })
+  const menu = tree.props.children.find(child => child?.type === 'ContextMenuContent')
+  const action = menu?.props?.children?.find(child => child?.props?.children === 'Open Bot Chat in New Window')
+
+  assert.equal(typeof action?.props?.onSelect, 'function')
+  await action.props.onSelect()
+  await new Promise(resolve => setTimeout(resolve, 0))
+
+  assert.deepEqual(JSON.parse(JSON.stringify(r.opened)), [
+    ['remote-pin', { profile: 'worker', connectionId: 'tailnet-a' }]
+  ])
+  assert.equal(r.routedRequests.length, 1)
+  assert.equal(r.routedRequests[0][0].connectionId, 'tailnet-a')
+  assert.equal(r.routedRequests[0][0].profile, 'worker')
+  assert.equal(r.routedRequests[0][0].targetProfile, 'backend-worker')
+  assert.equal(r.routedRequests[0][1], 'session.list')
+  assert.equal(r.routedRequests[0][2].profile, 'backend-worker')
+})
+
+test('behavior: remote BotRow popout refuses to create a missing canonical chat', async () => {
+  const r = renderRuntime({ remoteSessions: [] })
+  const tree = r.__BotRow({
+    bot: {
+      name: 'ops',
+      title: 'Ops',
+      description: '',
+      connectionId: 'tailnet-a',
+      connectionLabel: 'Tailnet A',
+      remoteSource: true,
+      sourceScoped: true,
+    },
+    onEdit: () => undefined
+  })
+  const menu = tree.props.children.find(child => child?.type === 'ContextMenuContent')
+  const action = menu?.props?.children?.find(child => child?.props?.children === 'Open Bot Chat in New Window')
+
+  assert.equal(typeof action?.props?.onSelect, 'function')
+  action.props.onSelect()
+  await new Promise(resolve => setTimeout(resolve, 0))
+
+  assert.deepEqual(JSON.parse(JSON.stringify(r.opened)), [])
+  assert.equal(r.routedRequests.length, 1)
+  assert.equal(r.routedRequests[0][0].connectionId, 'tailnet-a')
+  assert.equal(r.routedRequests[0][1], 'session.list')
+  assert.equal(r.activeRequests.length, 0)
+  assert.equal(r.ensured.length, 0)
+  assert.equal(r.mainOpened.length, 0)
+  assert.equal(r.notifyErrors.length, 1)
+  assert.match(r.notifyErrors[0][0].message, /read-only|cannot be created|resolve/i)
+  assert.match(r.notifyErrors[0][1], /new window/i)
 })
