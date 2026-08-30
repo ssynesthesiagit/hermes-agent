@@ -74,6 +74,7 @@ import {
   getSessionOwnerHint,
   type NewChatWorkspaceTarget,
   resolveComposerSessionKey,
+  rotateSessionStoredId,
   sessionPinId,
   setActiveSessionId,
   setActiveSessionStoredIdRotation,
@@ -374,6 +375,10 @@ export function useSessionActions({
     migrateQueuedPrompts(previousId, durableKey)
     migrateQueuedPrompts(nextId, durableKey)
 
+    // session.info can precede sessions.changed. Bridge that registry gap so
+    // route + selection still resolve to one lineage and Thread never replaces
+    // the live transcript with the full-screen session loader.
+    rotateSessionStoredId(previousId, nextId)
     setSelectedStoredSessionId(nextId)
     selectedStoredSessionIdRef.current = nextId
 

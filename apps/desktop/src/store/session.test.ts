@@ -41,6 +41,7 @@ import {
   mergeSessionPage,
   rememberedSessionProfile,
   resolveComposerSessionKey,
+  rotateSessionStoredId,
   sessionBelongsToProfile,
   sessionPinId,
   setCurrentCwd,
@@ -262,6 +263,42 @@ describe('resolveComposerSessionKey', () => {
 
   it('falls back to the live id when the tip row is not loaded yet', () => {
     expect(resolveComposerSessionKey('tip-new', [])).toBe('tip-new')
+  })
+})
+
+describe('rotateSessionStoredId', () => {
+  afterEach(() => {
+    setSessions([])
+  })
+
+  it('keeps a root session discoverable as its compression continuation', () => {
+    setSessions([session({ id: 'root', _lineage_root_id: null, title: 'Still working' })])
+
+    rotateSessionStoredId('root', 'tip-1')
+
+    expect($sessions.get()).toEqual([
+      expect.objectContaining({ id: 'tip-1', _lineage_root_id: 'root', title: 'Still working' })
+    ])
+  })
+
+  it('preserves the original root across repeated continuation rotations', () => {
+    setSessions([session({ id: 'tip-1', _lineage_root_id: 'root' })])
+
+    rotateSessionStoredId('tip-1', 'tip-2')
+
+    expect($sessions.get()[0]).toMatchObject({ id: 'tip-2', _lineage_root_id: 'root' })
+  })
+
+  it('deduplicates an already-arrived authoritative continuation row', () => {
+    setSessions([
+      session({ id: 'tip-1', _lineage_root_id: 'root', title: 'Old row' }),
+      session({ id: 'tip-2', _lineage_root_id: null, title: 'Server row' })
+    ])
+
+    rotateSessionStoredId('tip-1', 'tip-2')
+
+    expect($sessions.get()).toHaveLength(1)
+    expect($sessions.get()[0]).toMatchObject({ id: 'tip-2', _lineage_root_id: 'root', title: 'Server row' })
   })
 })
 

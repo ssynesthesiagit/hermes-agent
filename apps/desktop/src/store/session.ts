@@ -977,6 +977,51 @@ export const setConnection = (next: Updater<HermesConnection | null>) => {
 
 export const setGatewayState = (next: Updater<ConnectionState>) => updateAtom($gatewayState, next)
 export const setSessions = (next: Updater<SessionInfo[]>) => updateAtom($sessions, next)
+
+/**
+ * Bridge the short registry gap after auto-compression rotates a stored id.
+ *
+ * `session.info` announces the new continuation id before the next
+ * `sessions.changed` page necessarily contains that row. Keeping the existing
+ * row in place under the new id (and its durable lineage root) lets route and
+ * selection state re-home atomically instead of briefly looking like two
+ * unrelated chats and blanking the transcript behind the full-screen loader.
+ * The next server page remains authoritative and replaces this optimistic row.
+ */
+export function rotateSessionStoredId(previousId: string, nextId: string): void {
+  if (!previousId || !nextId || previousId === nextId) {
+    return
+  }
+
+  setSessions(current => {
+    const previousIndex = current.findIndex(session => session.id === previousId)
+
+    if (previousIndex < 0) {
+      return current
+    }
+
+    const previous = current[previousIndex]
+    const lineageRoot = previous._lineage_root_id ?? previousId
+    const nextIndex = current.findIndex(session => session.id === nextId)
+
+    if (nextIndex >= 0) {
+      const next = { ...current[nextIndex], _lineage_root_id: lineageRoot }
+
+      return current.flatMap((session, index) => {
+        if (index === previousIndex) {
+          return [next]
+        }
+
+        return index === nextIndex ? [] : [session]
+      })
+    }
+
+    return current.map((session, index) =>
+      index === previousIndex ? { ...session, id: nextId, _lineage_root_id: lineageRoot } : session
+    )
+  })
+}
+
 export const setCronSessions = (next: Updater<SessionInfo[]>) => updateAtom($cronSessions, next)
 export const setMessagingSessions = (next: Updater<SessionInfo[]>) => updateAtom($messagingSessions, next)
 export const setMessagingPlatformTotals = (next: Updater<Record<string, number>>) =>

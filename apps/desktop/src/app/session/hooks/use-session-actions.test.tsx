@@ -279,6 +279,7 @@ describe('active stored-session id rotation routing', () => {
     setActiveSessionId(null)
     setActiveSessionStoredIdRotation(null)
     setSelectedStoredSessionId(null)
+    setSessions([])
     vi.restoreAllMocks()
   })
 
@@ -287,6 +288,7 @@ describe('active stored-session id rotation routing', () => {
     const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: 'stored-A' }
     const navigate = vi.fn()
 
+    setSessions([storedSession({ id: 'stored-A', _lineage_root_id: null, title: 'Active work' })])
     setSelectedStoredSessionId('stored-A')
     render(
       <StoredIdRotationHarness
@@ -307,6 +309,9 @@ describe('active stored-session id rotation routing', () => {
 
     await waitFor(() => expect(selectedStoredSessionIdRef.current).toBe('stored-A-next'))
     expect($selectedStoredSessionId.get()).toBe('stored-A-next')
+    expect($sessions.get()).toEqual([
+      expect.objectContaining({ id: 'stored-A-next', _lineage_root_id: 'stored-A', title: 'Active work' })
+    ])
     expect(navigate).toHaveBeenCalledWith(sessionRoute('stored-A-next'), { replace: true })
     expect($activeSessionStoredIdRotation.get()).toBeNull()
   })

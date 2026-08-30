@@ -257,6 +257,38 @@ export class IncrementalExternalStoreRuntimeCore extends BaseAssistantRuntimeCor
   }
 }
 
+/**
+ * assistant-ui's ThreadListRuntimeImpl deliberately rebuilds its snapshot
+ * while its lazy subject has no subscriber yet. A normal provider mounts and
+ * subscribes quickly enough that this is usually invisible, but stacked bot
+ * session tiles can be mounted while the workspace/profile skin is also
+ * switching. React then performs two pre-subscribe getSnapshot reads, sees two
+ * different wrapper objects for the same thread-list state, and enters the
+ * `UseTapEffects -> notify -> getSnapshot` loop.
+ *
+ * Keep the public thread-list snapshot referentially stable when all of its
+ * observable fields are unchanged. We still call the original getter every
+ * time, so an update that occurred while disconnected is observed on the next
+ * read; only the identity-only wrapper churn is removed.
+ */
+export function stabilizeThreadListSnapshot(runtime: AssistantRuntime): AssistantRuntime {
+  const threads = runtime.threads
+  const read = threads.getState.bind(threads)
+  let snapshot = read()
+
+  threads.getState = () => {
+    const next = read()
+
+    if (!shallowEqual(snapshot, next)) {
+      snapshot = next
+    }
+
+    return snapshot
+  }
+
+  return runtime
+}
+
 export function useIncrementalExternalStoreRuntime<T extends ThreadMessage>(
   store: ExternalStoreAdapter<T>
 ): AssistantRuntime {
@@ -280,5 +312,5 @@ export function useIncrementalExternalStoreRuntime<T extends ThreadMessage>(
     return runtime.registerModelContextProvider(modelContext)
   }, [modelContext, runtime])
 
-  return useMemo(() => new AssistantRuntimeImpl(runtime), [runtime])
+  return useMemo(() => stabilizeThreadListSnapshot(new AssistantRuntimeImpl(runtime)), [runtime])
 }

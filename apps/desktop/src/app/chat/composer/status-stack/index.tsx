@@ -260,14 +260,23 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
             composerDockCard('top'),
             // Inset (mx-2) so the stack reads slightly narrower than the composer
             // surface below it — the original look.
-            'mx-2 overflow-hidden rounded-b-none border-b border-b-transparent pt-0.5',
-            'transition-opacity duration-200 ease-out',
-            scrolledUp ? 'opacity-30 group-hover/composer:opacity-100' : 'opacity-100'
+            'group/status-stack mx-2 overflow-hidden rounded-b-none border-b border-b-transparent pt-0.5'
           )}
+          data-slot="composer-status-surface"
         >
-          {sections.map(section => (
-            <div key={section.key}>{section.node}</div>
-          ))}
+          <div
+            className={cn(
+              'transition-opacity duration-200 ease-out',
+              scrolledUp
+                ? 'opacity-30 group-hover/status-stack:opacity-100 group-focus-within/status-stack:opacity-100'
+                : 'opacity-100'
+            )}
+            data-slot="composer-status-content"
+          >
+            {sections.map(section => (
+              <div key={section.key}>{section.node}</div>
+            ))}
+          </div>
         </div>
       )}
     </div>

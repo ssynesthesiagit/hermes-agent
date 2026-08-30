@@ -26,11 +26,14 @@
  * for observable state changes, not for object-identity churn of the adapter
  * literal — the render loop is impossible once no-op swaps are silent.
  */
-import { fromThreadMessageLike, getAutoStatus } from '@assistant-ui/core/internal'
+import { AssistantRuntimeImpl, fromThreadMessageLike, getAutoStatus } from '@assistant-ui/core/internal'
 import type { ExportedMessageRepository, ExternalStoreAdapter, ThreadMessage } from '@assistant-ui/react'
 import { describe, expect, it } from 'vitest'
 
-import { IncrementalExternalStoreRuntimeCore } from './incremental-external-store-runtime'
+import {
+  IncrementalExternalStoreRuntimeCore,
+  stabilizeThreadListSnapshot
+} from './incremental-external-store-runtime'
 
 const STATUS = getAutoStatus(false, false, false, false, undefined)
 
@@ -63,6 +66,20 @@ function adapterWith(messageRepository: ExportedMessageRepository, extra: Partia
 }
 
 describe('IncrementalExternalStoreThreadRuntimeCore adapter swap notifications', () => {
+  it('caches an unchanged public thread-list snapshot before React subscribes', () => {
+    const repo = repositoryOf([message('a', 'one')])
+    const core = new IncrementalExternalStoreRuntimeCore(adapterWith(repo))
+    const runtime = stabilizeThreadListSnapshot(new AssistantRuntimeImpl(core))
+
+    const first = runtime.threads.getState()
+    const second = runtime.threads.getState()
+
+    // ThreadListRuntimeImpl's lazy subject normally returns a fresh wrapper on
+    // every disconnected read. React requires getSnapshot to return the same
+    // object while the observable fields have not changed.
+    expect(second).toBe(first)
+  })
+
   it('does NOT notify subscribers when a new adapter object carries identical state (render-loop guard)', () => {
     const repo = repositoryOf([message('a', 'one'), message('b', 'two')])
     const core = new IncrementalExternalStoreRuntimeCore(adapterWith(repo))

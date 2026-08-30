@@ -321,18 +321,32 @@ function ChatRuntimeBoundary({
 
   const transcriptWindow = useMemo(() => ({ olderAvailable, expandWindow }), [expandWindow, olderAvailable])
 
-  const runtime = useIncrementalExternalStoreRuntime<ThreadMessage>({
-    messageRepository: runtimeMessageRepository,
-    isRunning: busy,
-    setMessages: onThreadMessagesChange,
-    onNew: async () => {
-      // Submission is handled explicitly by ChatBar.
-      // Keeping this no-op avoids duplicate prompt.submit calls.
-    },
-    onEdit,
-    onCancel: async () => onCancel(),
-    onReload
-  })
+  const cancelRuntime = useCallback(async () => onCancel(), [onCancel])
+
+  // AssistantRuntimeProvider commits its tap effects after every render. If
+  // that commit causes any subscriber above this boundary to repaint, handing
+  // the runtime a fresh adapter literal schedules another adapter effect even
+  // though none of its observable inputs moved. A restored session tile can
+  // then close the cycle (commit -> repaint -> fresh adapter -> commit) and hit
+  // React's maximum-update-depth guard. Keep the adapter identity stable until
+  // one of the values the runtime actually consumes changes.
+  const runtimeAdapter = useMemo(
+    () => ({
+      messageRepository: runtimeMessageRepository,
+      isRunning: busy,
+      setMessages: onThreadMessagesChange,
+      onNew: async () => {
+        // Submission is handled explicitly by ChatBar.
+        // Keeping this no-op avoids duplicate prompt.submit calls.
+      },
+      onEdit,
+      onCancel: cancelRuntime,
+      onReload
+    }),
+    [busy, cancelRuntime, onEdit, onReload, onThreadMessagesChange, runtimeMessageRepository]
+  )
+
+  const runtime = useIncrementalExternalStoreRuntime<ThreadMessage>(runtimeAdapter)
 
   return (
     <TranscriptWindowProvider value={transcriptWindow}>

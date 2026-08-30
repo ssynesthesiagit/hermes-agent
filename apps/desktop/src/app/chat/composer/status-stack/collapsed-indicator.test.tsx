@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
+import { setThreadAtBottom } from '@/store/thread-scroll'
 import { $todosBySession } from '@/store/todos'
 
 import { ComposerStatusStack } from './index'
@@ -20,6 +21,27 @@ describe('ComposerStatusStack collapsed todo indicator', () => {
   afterEach(() => {
     cleanup()
     $todosBySession.set({})
+    setThreadAtBottom(true)
+  })
+
+  it('keeps the glass surface opaque while only dimming its content when scrolled up', () => {
+    $todosBySession.set({
+      'session-1': [{ content: 'Keep the transcript readable', id: '1', status: 'in_progress' }]
+    })
+    setThreadAtBottom(false)
+
+    const view = render(
+      <MemoryRouter>
+        <ComposerStatusStack queue={null} sessionId="session-1" />
+      </MemoryRouter>
+    )
+
+    const surface = view.container.querySelector('[data-slot="composer-status-surface"]')
+    const content = view.container.querySelector('[data-slot="composer-status-content"]')
+
+    expect(surface?.className).not.toContain('opacity-30')
+    expect(content?.className).toContain('opacity-30')
+    expect(content?.className).toContain('group-hover/status-stack:opacity-100')
   })
 
   it('shows a running indicator next to the collapsed todo label', () => {
