@@ -266,6 +266,29 @@ def test_peer_paragraph_lists_registered_peers(tmp_path):
     assert "hermes peer list" in section
 
 
+def test_peer_paragraph_lists_direct_bot_at_machine_addresses(tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=True)
+    (home / "config.yaml").write_text(
+        textwrap.dedent(
+            """\
+            bot_peers:
+              swarmlord:
+                url: http://swarmlord.tailnet:8642
+                agents: [brain_omarchy, yatima-training]
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    section = bot_mode_probe.get_bot_mode_protocol_section(home)
+    assert "`@brain_omarchy@swarmlord`" in section
+    assert "`@yatima-training@swarmlord`" in section
+    assert "directly" in section.lower()
+    assert "intermediary" in section.lower()
+
+
 def test_fingerprint_changes_when_a_peer_is_registered(tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -278,3 +301,21 @@ def test_fingerprint_changes_when_a_peer_is_registered(tmp_path):
     )
     after = bot_mode_probe.capability_fingerprint(home)
     assert before != after
+
+
+def test_fingerprint_changes_when_peer_agent_directory_changes(tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=True)
+    config = home / "config.yaml"
+    config.write_text(
+        "bot_peers:\n  swarmlord:\n    url: http://swarmlord:8642\n",
+        encoding="utf-8",
+    )
+    before = bot_mode_probe.capability_fingerprint(home)
+    config.write_text(
+        "bot_peers:\n  swarmlord:\n    url: http://swarmlord:8642\n"
+        "    agents: [brain_omarchy]\n",
+        encoding="utf-8",
+    )
+    assert bot_mode_probe.capability_fingerprint(home) != before

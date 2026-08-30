@@ -250,6 +250,36 @@ def test_rejects_self_cycle_depth_and_forged_marker(local_setup):
     assert "marker" in forged
 
 
+def test_caller_history_lookup_failure_does_not_break_first_hop(local_setup, monkeypatch):
+    """A durable caller id is not a live gateway id.  Missing live history
+    must fall back to the caller profile's durable store instead of aborting
+    the route with the screenshot's ``session not found`` error."""
+    fake, _paths = local_setup
+    fake.add_session("bar", "existing", title="Bot Chat")
+    original_call = fake.call
+
+    def call(method, params):
+        if method == "session.history" and params.get("session_id") == "durable-caller":
+            raise local_profile.LocalRouteError("session not found")
+        return original_call(method, params)
+
+    fake.call = call
+    monkeypatch.setattr(local_profile, "_caller_messages_from_store", lambda *_args: [])
+    out = tools.a2a_call(
+        {"agent": "profile:bar", "message": "first hop"},
+        session_id="durable-caller",
+    )
+    assert "local reply" in out
+
+
+def test_active_profile_comes_from_context_home_not_sticky_selection(local_setup, monkeypatch):
+    _fake, paths = local_setup
+    contextual_home = paths["ops"].parent / "profiles" / "ops"
+    contextual_home.mkdir(parents=True)
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: contextual_home)
+    assert local_profile._active_profile() == "ops"
+
+
 def test_timeout_releases_singleflight_lock(local_setup):
     fake, _paths = local_setup
     _caller(fake)

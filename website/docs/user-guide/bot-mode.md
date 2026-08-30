@@ -130,17 +130,44 @@ Every gateway you register in **Settings → Connections** — local, remote URL
 Bots on one machine can message Bots on **another machine's gateway** without any desktop in the loop. Register the other gateway as a *peer* (its API server URL + `API_SERVER_KEY`):
 
 ```bash
-hermes peer add spark --url http://spark.lan:8377 --key <API_SERVER_KEY>
+# One pairing equips every isolated Bot profile on this machine and publishes
+# the exact remote addresses in each Bot Chat's roster.
+hermes peer add spark --url http://spark.lan:8377 --key <API_SERVER_KEY> \
+  --agents researcher,coder --all-profiles
+# For a Taildrop/secret-manager file, keep the credential out of argv:
+hermes peer add spark --url http://spark.lan:8377 --key-file /private/peer.env \
+  --agents researcher,coder --all-profiles
 hermes peer list
 hermes peer dm spark < /tmp/dm.txt        # message body from a file (nothing shell-interpreted)
-hermes peer dm spark/researcher < /tmp/dm.txt   # named profile on a multiplexed peer
+hermes peer dm @researcher@spark < /tmp/dm.txt # direct @bot@machine address
+hermes peer dm spark/researcher < /tmp/dm.txt  # legacy equivalent
 ```
+
+When the remote machine runs independent per-profile gateways instead of one
+multiplexing gateway, give each advertised Bot its exact API base and its own
+credential. The friendly address stays the same:
+
+```bash
+hermes peer route spark researcher \
+  --url http://spark.lan:8643 \
+  --key-file /private/researcher-peer.env \
+  --all-profiles
+hermes peer dm @researcher@spark < /tmp/dm.txt
+```
+
+An exact agent route takes precedence over the machine's multiplexed
+`/p/<profile>` fallback. Its secret is stored separately as
+`HERMES_PEER_<MACHINE>_<AGENT>_KEY`, so independently secured profiles do not
+have to share `API_SERVER_KEY`. Updating the machine with `peer add` preserves
+its exact agent routes.
 
 `hermes peer dm` delivers into the remote agent's canonical Bot Chat over the peer's existing API server, runs one agent turn there, and prints the reply on stdout — the exact cross-machine twin of the local `hermes -p <bot> chat` command.
 
-Once a peer is registered, the messaging protocol taught to every Bot Chat (`agent.bot_mode_protocol`) automatically includes the peer roster, and `message_agent` accepts peer targets directly — `message_agent(target="spark/researcher", …)`, or `target="spark"` for the peer's main agent — so **your bots learn on their own** that teammates exist on other machines and how to reach them. Registering or removing a peer refreshes each Bot Chat's protocol on its next message (capability epoch).
+Once a peer is registered, the messaging protocol taught to every Bot Chat (`agent.bot_mode_protocol`) automatically includes the peer roster and its exact `@bot@machine` addresses. A Bot calls `message_agent(target="@researcher@spark", …)` and Hermes sends directly to that destination profile's canonical Bot Chat—no local Bot is used as an intermediary. The older `spark/researcher` form and bare `spark` main-agent target remain compatible. Registering or removing a peer refreshes each Bot Chat's protocol on its next message (capability epoch).
 
-Requirements: the peer machine runs the `api_server` gateway platform with a strong `API_SERVER_KEY`; reachability is your network's business (LAN, Tailscale, VPN). The key is a credential and lives in `~/.hermes/.env` as `HERMES_PEER_<NAME>_KEY`; peer names/URLs live in `config.yaml` under `bot_peers`.
+Requirements: the peer machine runs the `api_server` gateway platform with a strong `API_SERVER_KEY`; reachability is your network's business (LAN, Tailscale, VPN). Machine-default and agent-specific keys are credentials and live in each isolated profile's `.env`; `--all-profiles` safely performs that propagation in one command. Peer names, URLs, exact agent endpoints, and the non-secret remote agent directory live in `config.yaml` under `bot_peers`.
+
+If the peer was previously paired only in the default profile, rerun `peer add` with `--all-profiles` and omit `--key`: Hermes reuses that existing machine-root peer key internally and never prints it or places it in a new command line.
 
 ## Bots across machines
 

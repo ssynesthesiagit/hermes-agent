@@ -126,9 +126,10 @@ def is_local_agent(agent: str) -> bool:
 
 def _active_profile() -> str:
     try:
-        from hermes_cli.profiles import get_active_profile_name
+        from hermes_constants import get_hermes_home
 
-        return str(get_active_profile_name() or "default")
+        home = get_hermes_home()
+        return home.name if home.parent.name == "profiles" else "default"
     except Exception as exc:
         raise LocalRouteError("could not determine the caller profile") from exc
 
@@ -202,11 +203,41 @@ def _parse_marker(text: str) -> _RouteMarker | None:
     return _RouteMarker(profile=profile, depth=depth, chain=chain)
 
 
-def _caller_marker(session_id: str) -> _RouteMarker | None:
+def _caller_messages_from_store(profile: str, session_id: str) -> list[dict[str, Any]]:
+    """Read a durable caller when ``session_id`` is not a live gateway id."""
+    if not session_id:
+        return []
+    db = None
+    try:
+        from hermes_cli.profiles import get_profile_dir
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=get_profile_dir(profile) / "state.db")
+        messages = db.get_messages_as_conversation(
+            session_id, include_ancestors=True
+        )
+        return [message for message in messages if isinstance(message, dict)]
+    except Exception:
+        return []
+    finally:
+        if db is not None and hasattr(db, "close"):
+            try:
+                db.close()
+            except Exception:
+                pass
+
+
+def _caller_marker(session_id: str, profile: str) -> _RouteMarker | None:
     if not session_id:
         return None
-    result = _gateway_call("session.history", {"session_id": session_id})
-    messages = _messages_from(result)
+    messages: list[dict[str, Any]] = []
+    try:
+        result = _gateway_call("session.history", {"session_id": session_id})
+        messages = _messages_from(result)
+    except LocalRouteError:
+        pass
+    if not messages:
+        messages = _caller_messages_from_store(profile, session_id)
     for message in reversed(messages):
         if _role(message) in {"user", "human"}:
             return _parse_marker(_message_text(message))
@@ -499,7 +530,7 @@ def route(agent: str, message: str, context_id: str = "", *, caller_session_id: 
     if target_profile == caller_profile:
         raise LocalRouteError("cannot route a local A2A message to the caller profile")
 
-    marker = _caller_marker(str(caller_session_id or "").strip())
+    marker = _caller_marker(str(caller_session_id or "").strip(), caller_profile)
     if marker is not None:
         if marker.profile != caller_profile or marker.chain[-1] != caller_profile:
             raise LocalRouteError("local routing marker does not match caller profile")

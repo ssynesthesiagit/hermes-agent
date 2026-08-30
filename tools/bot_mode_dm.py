@@ -69,6 +69,7 @@ _DM_DIR_NAME = "hermes-dm"
 _DM_STALE_SECONDS = 24 * 60 * 60
 
 _PEER_TARGET_RE = re.compile(r"^([a-z0-9][a-z0-9_-]{0,63})/([a-zA-Z0-9][a-zA-Z0-9_-]{0,63})$")
+_BOT_AT_PEER_RE = re.compile(r"^([a-zA-Z0-9][a-zA-Z0-9_-]{0,63})@([a-z0-9][a-z0-9_-]{0,63})$")
 _LOCAL_TARGET_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
 
 
@@ -95,8 +96,8 @@ def message_agent_tool_schema() -> dict:
                 "don't fan out to several agents unless the user explicitly asked. "
                 "Use the teammate roster in your system prompt (names + roles) to pick "
                 "the right recipient; targets: a teammate name (e.g. 'researcher'), "
-                "'<peer>/<agent>' for an agent on a registered peer gateway "
-                "(e.g. 'spark/researcher', or just '<peer>' for the peer's main agent), "
+                "'@<agent>@<machine>' for a direct tailnet peer delivery "
+                "(e.g. '@researcher@spark'; '<peer>/<agent>' remains compatible), "
                 "or an agent on another connected machine from your roster (use "
                 "'<handle>@<connection>' if the same handle exists on several)."
             ),
@@ -108,7 +109,8 @@ def message_agent_tool_schema() -> dict:
                         "description": (
                             "Who to message: a teammate profile name from your roster "
                             "('researcher', 'hermes' for the default agent), or "
-                            "'<peer>' / '<peer>/<agent>' for a registered peer gateway."
+                            "'@<agent>@<machine>' for a registered peer gateway "
+                            "(legacy '<peer>/<agent>' is also accepted)."
                         ),
                     },
                     "message": {
@@ -291,12 +293,19 @@ def message_agent_tool(
     sender_handle = _handle(me)
     prefix = f"Message from 🤖 {sender_handle} (@{sender_handle}): "
 
-    # ── peer target: '<peer>/<agent>' or a bare registered peer name ──
+    # ── direct peer target: '@<agent>@<machine>', legacy '<peer>/<agent>',
+    # or a bare registered peer name.  Resolve this BEFORE the Desktop relay:
+    # an explicit bot@peer address must never turn into a telephone hop.
     peer_match = _PEER_TARGET_RE.match(raw_target)
+    bot_at_peer = _BOT_AT_PEER_RE.match(raw_target)
     bare_peer = raw_target.lower() if raw_target.lower() in peers else None
-    if peer_match or bare_peer:
-        peer_name = peer_match.group(1) if peer_match else bare_peer
-        peer_profile = peer_match.group(2) if peer_match else None
+    if peer_match or bot_at_peer or bare_peer:
+        if bot_at_peer:
+            peer_name = bot_at_peer.group(2).lower()
+            peer_profile = bot_at_peer.group(1)
+        else:
+            peer_name = peer_match.group(1) if peer_match else bare_peer
+            peer_profile = peer_match.group(2) if peer_match else None
         if peer_name not in peers:
             return _err(
                 f"No registered peer named '{peer_name}'.", roster=teammates, peers=peers

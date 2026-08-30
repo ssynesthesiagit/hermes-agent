@@ -286,6 +286,18 @@ def test_peer_delivery_command(tmp_path, monkeypatch):
     assert mode == "stdin"
     assert transport_argv == ["hermes", "peer", "dm", "spark"]
 
+    # Human/model-friendly direct address: @bot@machine.  This must resolve
+    # straight to peer dm, never fall through to the Desktop relay.
+    result3 = json.loads(
+        bot_mode_dm.message_agent_tool(
+            target="@researcher@spark", message="ping", agent=agent
+        )
+    )
+    assert result3["status"] == "sent"
+    mode, _dm_file, transport_argv = _runner_parts(calls[2]["command"])
+    assert mode == "stdin"
+    assert transport_argv == ["hermes", "peer", "dm", "spark/researcher"]
+
 
 def test_named_profile_sender_prefix(tmp_path, monkeypatch):
     """A named-profile bot signs with its own handle, not @hermes."""

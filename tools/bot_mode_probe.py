@@ -30,6 +30,7 @@ Toggle via ``agent.bot_mode_protocol`` in config.yaml (default True).
 from __future__ import annotations
 
 import os
+import re
 import threading
 from pathlib import Path
 
@@ -192,6 +193,39 @@ def _peers(root: Path) -> list[str]:
         return []
 
 
+def _peer_agents(root: Path) -> dict[str, list[str]]:
+    """Configured peer -> advertised agent/profile names (non-secret).
+
+    ``agents`` is deliberately declarative and local: prompt construction
+    never performs network I/O.  ``hermes peer add --agents ...`` (or config)
+    supplies the small directory used to render exact direct addresses.
+    """
+    try:
+        import yaml
+
+        data = yaml.safe_load((root / "config.yaml").read_text(encoding="utf-8")) or {}
+        peers = data.get("bot_peers") if isinstance(data, dict) else None
+        if not isinstance(peers, dict):
+            return {}
+        result: dict[str, list[str]] = {}
+        for peer, entry in peers.items():
+            if not isinstance(entry, dict):
+                continue
+            agents = entry.get("agents")
+            if not isinstance(agents, list):
+                continue
+            valid = [
+                str(agent).strip()
+                for agent in agents
+                if re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}", str(agent).strip())
+            ]
+            if valid:
+                result[str(peer)] = sorted(set(valid), key=str.lower)
+        return result
+    except Exception:
+        return {}
+
+
 def _remote_paragraph(root: Path) -> str:
     """Protocol addendum for agents on OTHER connected machines.
 
@@ -230,12 +264,24 @@ def _peer_paragraph(root: Path) -> str:
     if not peers:
         return ""
     listed = ", ".join(f"`{p}`" for p in peers)
+    directory = _peer_agents(root)
+    direct = [
+        f"- `@{agent}@{peer}`"
+        for peer in peers
+        for agent in directory.get(peer, [])
+    ]
+    direct_block = (
+        "\nDirect remote bot addresses:\n" + "\n".join(direct)
+        if direct
+        else ""
+    )
     return (
-        "\n\nTeammates on OTHER machines: this install also has peer gateways "
-        f"registered ({listed}). Message an agent on a peer the same way — "
-        'message_agent with target "<peer>/<agent-name>" (or "<peer>" alone '
-        "for the peer's main agent). Run `hermes peer list` for the live "
-        "peer list."
+        "\n\nTeammates on OTHER machines: this install has authenticated peer "
+        f"gateways registered ({listed}). Address the destination directly "
+        "with message_agent target `@<bot>@<machine>`; delivery goes straight "
+        "to that bot's canonical Bot Chat with no intermediary bot. "
+        'Legacy target "<peer>/<agent-name>" remains supported.'
+        f"{direct_block}\nRun `hermes peer list` for the live peer list."
     )
 
 def _build_section(home: Path) -> str:
@@ -382,14 +428,17 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
     # Protocol-text version salt: bumping this refreshes every eternal Bot
     # Chat prompt ONCE so existing bots adopt a new protocol section (e.g.
     # the v2 message_agent tool replacing the shellout instructions).
-    surface["protocol_version"] = 2
+    surface["protocol_version"] = 3
     try:
         # Peer gateways are part of the messaging surface: registering one
         # must refresh eternal Bot Chat prompts so the cross-machine DM
         # paragraph appears on the next message.
-        surface["peers"] = _peers(_hermes_root(resolved))
+        root = _hermes_root(resolved)
+        surface["peers"] = _peers(root)
+        surface["peer_agents"] = _peer_agents(root)
     except Exception:
         surface["peers"] = []
+        surface["peer_agents"] = {}
     try:
         # The Desktop relay roster is part of the messaging surface too:
         # connecting/disconnecting a machine, or agents appearing on one,
