@@ -16,6 +16,7 @@ from tools.computer_use import cua_backend
 
 
 _VAR = "CUA_DRIVER_RS_TELEMETRY_ENABLED"
+_WAYLAND_VAR = "CUA_DRIVER_RS_ENABLE_WAYLAND"
 
 
 class TestTelemetryDisabledFlag:
@@ -50,3 +51,27 @@ class TestChildEnv:
             env = cua_backend.cua_driver_child_env({_VAR: "1"})
             assert env[_VAR] == "0"
 
+    def test_hyprland_enables_native_wayland_backend(self):
+        with (
+            patch.object(cua_backend.sys, "platform", "linux"),
+            patch.object(cua_backend, "_cua_telemetry_disabled", return_value=True),
+        ):
+            env = cua_backend.cua_driver_child_env({
+                "HYPRLAND_INSTANCE_SIGNATURE": "example",
+                "WAYLAND_DISPLAY": "wayland-1",
+            })
+
+        assert env[_WAYLAND_VAR] == "1"
+
+    def test_hyprland_respects_explicit_wayland_override(self):
+        with (
+            patch.object(cua_backend.sys, "platform", "linux"),
+            patch.object(cua_backend, "_cua_telemetry_disabled", return_value=True),
+        ):
+            env = cua_backend.cua_driver_child_env({
+                "HYPRLAND_INSTANCE_SIGNATURE": "example",
+                "WAYLAND_DISPLAY": "wayland-1",
+                _WAYLAND_VAR: "0",
+            })
+
+        assert env[_WAYLAND_VAR] == "0"
