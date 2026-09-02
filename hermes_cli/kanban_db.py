@@ -3119,6 +3119,21 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
 # ID generation
 # ---------------------------------------------------------------------------
 
+_TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+
+
+def validate_task_id(task_id: str) -> str:
+    """Validate a task id before it is used as a dispatch selector.
+
+    Kanban-generated ids are URL-safe ``t_<hex>`` values, while older boards
+    and tests may contain other safe identifiers.  Keep the selector
+    compatible with those existing ids but reject path/control characters and
+    unbounded input before it reaches SQL or worker/path handling.
+    """
+    if not isinstance(task_id, str) or not _TASK_ID_RE.fullmatch(task_id):
+        raise ValueError("task id must be a non-empty URL-safe identifier")
+    return task_id
+
 def _new_task_id() -> str:
     """Generate a short, URL-safe task id.
 
@@ -9819,6 +9834,7 @@ def dispatch_once(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    target_task_id: Optional[str] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
@@ -9835,6 +9851,8 @@ def dispatch_once(
     boards tick in parallel. See :func:`_dispatch_tick_lock` for the
     cross-process / cross-platform mechanics.
     """
+    if target_task_id is not None:
+        target_task_id = validate_task_id(target_task_id)
     try:
         db_path = kanban_db_path(board=board)
     except Exception:
@@ -9854,6 +9872,7 @@ def dispatch_once(
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
             reconcile_orphans=reconcile_orphans,
+            target_task_id=target_task_id,
         )
         _fire_dispatch_tick_hook(result, board=board, dry_run=dry_run)
         return result
@@ -9874,6 +9893,7 @@ def dispatch_once(
                 default_assignee=default_assignee,
                 max_in_progress_per_profile=max_in_progress_per_profile,
                 reconcile_orphans=reconcile_orphans,
+                target_task_id=target_task_id,
             )
             # Still under the dispatch lock: run the periodic PASSIVE WAL
             # checkpoint (see _maybe_checkpoint_wal; the -wal file size is
@@ -9901,6 +9921,7 @@ def _dispatch_once_locked(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    target_task_id: Optional[str] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick.
 
@@ -9937,6 +9958,8 @@ def _dispatch_once_locked(
     ``board`` pins workspace/log/db resolution for this tick to a specific
     board. When omitted, the current-board resolution chain is used.
     """
+    if target_task_id is not None:
+        target_task_id = validate_task_id(target_task_id)
     # Reap zombie children from previously spawned workers. See
     # reap_worker_zombies() for the full rationale.
     reap_worker_zombies()
@@ -10033,15 +10056,22 @@ def _dispatch_once_locked(
             )
             spawn_budget = 1
 
-    ready_rows = conn.execute(
-        "SELECT id, assignee FROM tasks "
-        "WHERE status = 'ready' AND claim_lock IS NULL "
-        "ORDER BY priority DESC, created_at ASC"
-    ).fetchall()
+    if target_task_id is None:
+        ready_rows = conn.execute(
+            "SELECT id, assignee FROM tasks "
+            "WHERE status = 'ready' AND claim_lock IS NULL "
+            "ORDER BY priority DESC, created_at ASC"
+        ).fetchall()
+    else:
+        ready_rows = conn.execute(
+            "SELECT id, assignee FROM tasks "
+            "WHERE id = ? AND status = 'ready' AND claim_lock IS NULL",
+            (target_task_id,),
+        ).fetchall()
     # Review rows are enumerated up front (not after the ready loop) so the
     # budget split below can see whether review work exists at all.
     review_rows = []
-    if review_dispatch_enabled():
+    if target_task_id is None and review_dispatch_enabled():
         review_rows = conn.execute(
             "SELECT id, assignee FROM tasks "
             "WHERE status = 'review' AND claim_lock IS NULL "
