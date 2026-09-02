@@ -118,6 +118,11 @@ class YatimaIntegrityAdapterTests(unittest.TestCase):
         self.assertEqual(context.middleware, [])
         self.assertEqual(context.hooks, [])
 
+    def test_worker_bundle_profile_is_inert_outside_a_dispatched_worker(self):
+        context = _Context({"integrity_enabled": True, "worker_bundle_enabled": True})
+        self.package.register(context)
+        self.assertEqual(context.middleware, [])
+
     def test_missing_config_is_not_activated_but_explicit_enable_registers_fail_closed_callbacks(self):
         context = _Context({"integrity_enabled": True, "integrity_config_path": "/missing/runtime-integrity.json"})
         self.package.register(context)
