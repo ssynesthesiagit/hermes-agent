@@ -3569,6 +3569,22 @@ def create_task(
                         "provider_override": provider_override,
                     },
                 )
+                if task_status == "blocked":
+                    # ``--initial-status blocked`` is documented as an
+                    # immediate human-ops gate.  Give it the same durable
+                    # sticky marker as an explicit worker/operator block so
+                    # recompute_ready cannot silently promote and dispatch it
+                    # on the next gateway tick.
+                    _append_event(
+                        conn,
+                        task_id,
+                        "blocked",
+                        {
+                            "reason": "initial human-ops block",
+                            "kind": "needs_input",
+                            "source_status": "ready",
+                        },
+                    )
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
             return task_id
         except sqlite3.IntegrityError:
