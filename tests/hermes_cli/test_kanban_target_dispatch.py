@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -134,7 +135,9 @@ def test_cli_dispatch_parser_and_handler_pass_target(monkeypatch, capsys):
     parser = argparse.ArgumentParser(prog="hermes")
     sub = parser.add_subparsers(dest="command")
     cli.build_parser(sub)
-    args = parser.parse_args(["kanban", "dispatch", "--task", "t_deadbeef", "--json"])
+    args = parser.parse_args([
+        "kanban", "dispatch", "--task", "t_deadbeef", "--max-in-progress", "1", "--json",
+    ])
     captured = {}
 
     def fake_dispatch(_conn, **kwargs):
@@ -145,7 +148,64 @@ def test_cli_dispatch_parser_and_handler_pass_target(monkeypatch, capsys):
     monkeypatch.setattr(cli.kb, "connect_closing", lambda: _closed_context())
     cli._cmd_dispatch(args)
     assert captured["target_task_id"] == "t_deadbeef"
+    assert captured["max_in_progress"] == 1
     assert json.loads(capsys.readouterr().out)["spawned"] == []
+
+
+def test_cli_max_in_progress_overrides_config(monkeypatch, capsys):
+    parser = argparse.ArgumentParser(prog="hermes")
+    sub = parser.add_subparsers(dest="command")
+    cli.build_parser(sub)
+    args = parser.parse_args(["kanban", "dispatch", "--max-in-progress", "1", "--json"])
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"kanban": {"max_in_progress": 9}},
+    )
+    captured = {}
+
+    def fake_dispatch(_conn, **kwargs):
+        captured.update(kwargs)
+        return kb.DispatchResult()
+
+    monkeypatch.setattr(cli.kb, "dispatch_once", fake_dispatch)
+    monkeypatch.setattr(cli.kb, "connect_closing", lambda: _closed_context())
+    cli._cmd_dispatch(args)
+    assert captured["max_in_progress"] == 1
+    assert json.loads(capsys.readouterr().out)["spawned"] == []
+
+
+def test_two_exact_target_dispatches_respect_global_max_in_progress_one(
+    kanban_home, monkeypatch,
+):
+    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda _name: True)
+    spawned = []
+
+    def spawn(task, workspace, board=None):
+        spawned.append(task.id)
+        return os.getpid()
+
+    with kb.connect() as conn:
+        first = kb.create_task(conn, title="first owner envelope", assignee="alice")
+        second = kb.create_task(conn, title="second owner envelope", assignee="alice")
+        first_result = kb.dispatch_once(
+            conn,
+            spawn_fn=spawn,
+            target_task_id=first,
+            max_in_progress=1,
+            reconcile_orphans=False,
+        )
+        second_result = kb.dispatch_once(
+            conn,
+            spawn_fn=spawn,
+            target_task_id=second,
+            max_in_progress=1,
+            reconcile_orphans=False,
+        )
+
+        assert [row[0] for row in first_result.spawned] == [first]
+        assert second_result.spawned == []
+        assert spawned == [first]
+        assert kb.get_task(conn, second).status == "ready"
 
 
 class _closed_context:
