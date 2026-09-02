@@ -53,6 +53,25 @@ def kanban_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 # ---------------------------------------------------------------------------
 
 
+def test_initial_human_ops_block_is_sticky(kanban_home: Path) -> None:
+    """The create-time blocked state must never become a ready worker."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="occupied owner slot",
+            created_by="owner-command-center",
+            initial_status="blocked",
+        )
+        assert kb.get_task(conn, tid).status == "blocked"
+        for _ in range(5):
+            assert kb.recompute_ready(conn) == 0
+            assert kb.get_task(conn, tid).status == "blocked"
+        runs = conn.execute(
+            "SELECT COUNT(*) FROM task_runs WHERE task_id = ?", (tid,)
+        ).fetchone()[0]
+        assert runs == 0
+
+
 def test_worker_block_is_not_auto_promoted_by_recompute_ready(kanban_home: Path) -> None:
     """A standalone task that a worker explicitly blocks for review
     must stay blocked across an arbitrary number of dispatcher ticks.
