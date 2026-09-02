@@ -15726,15 +15726,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             adapter._voice_input_callback = self._handle_voice_channel_input
                         self.delivery_router.adapters = self.adapters
                         del self._failed_platforms[platform]
+                        # connect() returning True does not mean the adapter's
+                        # send/receive path is actually confirmed active --
+                        # Telegram's degraded-polling reconnect intentionally
+                        # returns True so the gateway stays up while its own
+                        # background ladder retries. Stamping "connected"
+                        # unconditionally here would silently undo the
+                        # adapter's own accurate status write (#101391).
+                        _degraded = getattr(adapter, "_send_path_degraded", False)
                         self._update_platform_runtime_status(
                             platform.value,
-                            platform_state="connected",
+                            platform_state="retrying" if _degraded else "connected",
                             error_code=None,
-                            error_message=None,
+                            error_message=(
+                                "connected but not yet confirmed active; recovering in background"
+                                if _degraded else None
+                            ),
                             needs_attention=False,
                             retrying_since=None,
                         )
-                        logger.info("✓ %s reconnected successfully", platform.value)
+                        logger.info(
+                            "%s %s reconnected%s",
+                            "⚠" if _degraded else "✓",
+                            platform.value,
+                            " in degraded mode (send/receive path not yet confirmed)" if _degraded else " successfully",
+                        )
 
                         # Final responses rejected while this adapter was down
                         # are still owned by this live process, so startup
