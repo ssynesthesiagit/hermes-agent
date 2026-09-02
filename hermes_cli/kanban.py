@@ -133,6 +133,17 @@ def _parse_branch_flag(value: Optional[str]) -> Optional[str]:
     return branch
 
 
+def _parse_positive_int(value: str) -> int:
+    """Parse a positive integer CLI cap."""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError("value must be a positive integer") from exc
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("value must be a positive integer")
+    return parsed
+
+
 def _check_dispatcher_presence(
     hermes_home: Optional[Path] = None,
 ) -> tuple[bool, str]:
@@ -757,6 +768,13 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                         help="Don't actually spawn processes; just print what would happen")
     p_disp.add_argument("--max", type=int, default=None,
                         help="Cap number of spawns this pass")
+    p_disp.add_argument(
+        "--max-in-progress",
+        type=_parse_positive_int,
+        default=None,
+        metavar="N",
+        help="Override the global in-progress concurrency cap for this pass",
+    )
     p_disp.add_argument("--failure-limit", type=int,
                         default=kb.DEFAULT_SPAWN_FAILURE_LIMIT,
                         help=f"Auto-block a task after this many consecutive non-success attempts "
@@ -2631,6 +2649,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     # (#28805). Same semantics as the gateway dispatch path so behavior
     # matches whether the user runs the CLI directly or relies on the
     # gateway-embedded dispatcher.
+    cli_max_in_progress = getattr(args, "max_in_progress", None)
     try:
         from hermes_cli.config import load_config
         _cfg = load_config()
@@ -2649,11 +2668,16 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         max_in_progress_per_profile = _coerce_positive_int(
             _kanban_cfg.get("max_in_progress_per_profile")
         )
-        max_in_progress = _coerce_positive_int(_kanban_cfg.get("max_in_progress"))
-        # Memory-derived default when unset (OOF-30/OOF-77) — same
-        # fallback the gateway-embedded dispatcher applies, so behaviour
-        # matches regardless of which path runs the tick.
-        max_in_progress = kb.resolve_max_in_progress(max_in_progress)
+        if cli_max_in_progress is not None:
+            # An explicit CLI cap is authoritative for this pass and must
+            # not be replaced by the configured or memory-derived default.
+            max_in_progress = cli_max_in_progress
+        else:
+            max_in_progress = _coerce_positive_int(_kanban_cfg.get("max_in_progress"))
+            # Memory-derived default when unset (OOF-30/OOF-77) — same
+            # fallback the gateway-embedded dispatcher applies, so behaviour
+            # matches regardless of which path runs the tick.
+            max_in_progress = kb.resolve_max_in_progress(max_in_progress)
         # CLI --max overrides config kanban.max_spawn when both are present;
         # CLI is the more explicit signal so it wins.
         cli_max = getattr(args, "max", None)
@@ -2663,7 +2687,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     except Exception:
         default_assignee = None
         max_in_progress_per_profile = None
-        max_in_progress = None
+        max_in_progress = cli_max_in_progress
         max_spawn = getattr(args, "max", None)
     with kb.connect_closing() as conn:
         res = kb.dispatch_once(
