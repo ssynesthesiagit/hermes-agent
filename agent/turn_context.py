@@ -25,6 +25,7 @@ move-and-name refactor with no semantic change.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 import uuid
@@ -670,8 +671,13 @@ def build_turn_context(
     agent._persist_user_message_idx = None
     agent._persist_user_message_override = persist_user_message
     agent._persist_user_message_timestamp = persist_user_timestamp
-    # Generate unique task_id if not provided to isolate VMs between tasks.
-    effective_task_id = task_id or str(uuid.uuid4())
+    # Dispatcher-spawned Kanban workers already have a durable task identity.
+    # Bind every provider/tool hook in that worker to the same id rather than
+    # inventing a per-turn UUID.  Interactive turns retain the UUID fallback.
+    # This is the host-observed seam used by K3/runtime-integrity scope checks;
+    # model-supplied text can never choose or rewrite it.
+    kanban_task_id = os.environ.get("HERMES_KANBAN_TASK")
+    effective_task_id = kanban_task_id or task_id or str(uuid.uuid4())
     agent._current_task_id = effective_task_id
     turn_id = str(getattr(agent, "_relay_pending_turn_id", "") or "")
     if not turn_id:

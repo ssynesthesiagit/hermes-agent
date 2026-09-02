@@ -252,6 +252,25 @@ def test_preflight_timeout_stops_turn_before_provider_boundary():
     provider_call.assert_not_called()
 
 
+def test_kanban_worker_uses_durable_task_id(monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_owner_integrity")
+    agent = _FakeAgent()
+
+    ctx = _build(agent)
+
+    assert ctx.effective_task_id == "t_owner_integrity"
+    assert agent._current_task_id == "t_owner_integrity"
+
+
+def test_kanban_environment_overrides_per_turn_task_id(monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_worker")
+    agent = _FakeAgent()
+
+    ctx = _build(agent, task_id="explicit-task")
+
+    assert ctx.effective_task_id == "t_worker"
+
+
 def test_user_message_preserves_platform_event_timestamp():
     agent = _FakeAgent()
 

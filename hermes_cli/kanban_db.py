@@ -6311,7 +6311,7 @@ def block_task(
     recurrences = 0
     with write_txn(conn):
         cur_row = conn.execute(
-            "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?",
+            "SELECT status, block_kind, block_recurrences, created_by FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         if cur_row is None:
@@ -6388,7 +6388,8 @@ def block_task(
         same_cause = prev_kind == kind
         recurrences = prev_recurrences + 1 if same_cause else 1
 
-        if recurrences >= BLOCK_RECURRENCE_LIMIT:
+        owner_scoped = cur_row["created_by"] == "owner-command-center"
+        if recurrences >= BLOCK_RECURRENCE_LIMIT and not owner_scoped:
             # Loop detected — stop letting the unblocker spin this task. Route
             # to triage for a human-in-the-loop decision instead of blocked.
             cur = conn.execute(
@@ -6482,6 +6483,7 @@ def block_task(
                     "kind": kind,
                     "recurrences": recurrences,
                     "source_status": source_status,
+                    "owner_escalation_required": owner_scoped and recurrences >= BLOCK_RECURRENCE_LIMIT,
                 },
                 run_id=run_id,
             )
