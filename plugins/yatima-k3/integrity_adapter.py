@@ -533,6 +533,12 @@ def build_integrity_runtime(ctx: Any) -> HermesIntegrityRuntime | None:
     if enabled is not True:
         return None
     override = os.environ.pop("YATIMA_INTEGRITY_WORKER_CONFIG_JSON", "")
+    if not override:
+        try:
+            if ctx.get_config("worker_bundle_enabled", False) is True:
+                return None
+        except Exception:
+            return None
     try:
         override_config = json.loads(override) if override else None
     except json.JSONDecodeError:
