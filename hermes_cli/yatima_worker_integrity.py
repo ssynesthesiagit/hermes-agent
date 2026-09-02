@@ -22,6 +22,32 @@ from typing import Any, Mapping
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$")
 
+_READ_ONLY_TOOL_TIERS = {
+    "read_file": "C0",
+    "file_read": "C0",
+    "search_files": "C0",
+    "list_files": "C0",
+    "list_directory": "C0",
+    "kanban_show": "C0",
+    "kanban_context": "C0",
+    "kanban_complete": "C0",
+    "kanban_block": "C0",
+    "kanban_heartbeat": "C0",
+    "kanban_comment": "C0",
+    "session_search": "C0",
+    "skill_view": "C0",
+    "web_search": "C0",
+    "web_extract": "C0",
+    "web_fetch": "C0",
+}
+_WRITE_TOOL_TIERS = {
+    "terminal": "C1",
+    "write_file": "C1",
+    "patch_file": "C1",
+    "apply_patch": "C1",
+    "execute_code": "C1",
+}
+
 
 class YatimaWorkerIntegrityError(RuntimeError):
     """The protected worker bundle could not be prepared."""
@@ -136,7 +162,9 @@ def prepare_worker_security(
     recorded_at = _iso(now)
     source_locator = f"kanban://{board}/{task_id}"
     constraints = envelope.get("constraints")
-    if not isinstance(constraints, list):
+    if isinstance(constraints, str):
+        constraints = [constraints]
+    elif not isinstance(constraints, list):
         constraints = []
     records = [
         k3.ClassifiedInput(
@@ -255,6 +283,30 @@ def prepare_worker_security(
         _atomic_json(registry_path, {"issuers": []})
     quarantine_root = state_root / "quarantine"
     quarantine_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    write_authority = str(envelope.get("writeAuthority", "READ_ONLY"))
+    task_ceiling = "C1" if write_authority == "REPOSITORY_WRITES_ISOLATED" else "C0"
+    tool_tiers = dict(_READ_ONLY_TOOL_TIERS)
+    tool_tiers.update(_WRITE_TOOL_TIERS)
+    allowed_tools = sorted(
+        _READ_ONLY_TOOL_TIERS
+        if task_ceiling == "C0"
+        else {*_READ_ONLY_TOOL_TIERS, *_WRITE_TOOL_TIERS}
+    )
+    exact_model_id = str(getattr(task, "model_override", None) or "")
+    certificate_id = f"owner-{body_hash[:16]}"
+    issuer_id = f"hermes-{profile_id}"
+    capability_certificate = {
+        "certificate_id": certificate_id,
+        "role_id": profile_id,
+        "tier": task_ceiling,
+        "policy_generation": policy_generation,
+        "exact_model_id": exact_model_id,
+        "issuer_id": issuer_id,
+        "allowed_tools": allowed_tools,
+        "revoked": False,
+    }
+    capability_path = bundle_root / "capability.json"
+    _atomic_json(capability_path, capability_certificate)
     integrity_config = {
         "enabled": True,
         "trusted": True,
@@ -264,11 +316,15 @@ def prepare_worker_security(
         "issuer_registry_path": str(registry_path),
         "ledger_path": str(ledger_path),
         "quarantine_root": str(quarantine_root),
-        "issuer_id": f"hermes-{profile_id}",
+        "issuer_id": issuer_id,
         "policy_generation": policy_generation,
         "scope": scope_values,
+        "role_ceiling": "C1",
+        "task_ceiling": task_ceiling,
+        "tool_tiers": tool_tiers,
+        "capability_certificate": capability_certificate,
         "runtime_identity": {
-            "capability_certificate": f"owner-envelope-{body_hash[:16]}",
+            "capability_certificate": certificate_id,
         },
     }
     env["YATIMA_INTEGRITY_WORKER_CONFIG_JSON"] = json.dumps(
@@ -282,6 +338,9 @@ def prepare_worker_security(
         "ledger_path": str(ledger_path),
         "registry_path": str(registry_path),
         "quarantine_root": str(quarantine_root),
+        "task_ceiling": task_ceiling,
+        "capability_path": str(capability_path),
+        "capability_certificate": capability_certificate,
         "private_key_material_persisted": False,
     }
 

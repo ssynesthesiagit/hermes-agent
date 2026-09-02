@@ -83,6 +83,7 @@ class HermesIntegrityRuntime:
         self.ledger = None
         self.broker = None
         self.envelopes = core.AttemptEnvelopeStore()
+        self._evidence_state = "CANDIDATE"
         if not self.active:
             return
         registry_path = Path(str(self.config["issuer_registry_path"])).expanduser()
@@ -264,6 +265,16 @@ class HermesIntegrityRuntime:
         }
         try:
             identity = self.core.RuntimeIdentity.from_mapping(values)
+            certificate_raw = self.config.get("capability_certificate")
+            if certificate_raw is not None:
+                certificate = self.core.CapabilityCertificate.from_mapping(certificate_raw)
+                if certificate.role_id != identity.role_id:
+                    self._deny("capability certificate role does not match runtime identity")
+                if certificate.exact_model_id and certificate.exact_model_id != identity.exact_model_id:
+                    self._deny("capability certificate model does not match runtime identity")
+                if self.broker is not None and certificate.issuer_id:
+                    if certificate.issuer_id != self.broker.public_issuer().issuer_id:
+                        self._deny("capability certificate issuer does not match runtime issuer")
             expected_hash = context.get("final_request_hash")
             if expected_hash is not None and expected_hash != self.core.request_hash(request):
                 self._deny("STALE_RUNTIME_IDENTITY: final request bytes changed after route resolution")
@@ -309,13 +320,36 @@ class HermesIntegrityRuntime:
 
     @staticmethod
     def _result_hash(core: Any, result: Any) -> str:
-        if isinstance(result, (str, int, float, bool, list, tuple, dict, type(None))):
-            return core.sha256_json(result)
-        for method in ("model_dump", "to_dict", "dict"):
-            converter = getattr(result, method, None)
-            if callable(converter):
-                return core.sha256_json(converter())
-        raise IntegrityMiddlewareDenied("provider/tool result cannot be canonically read back")
+        def canonical(value: Any, seen: set[int]) -> Any:
+            if isinstance(value, (str, int, float, bool, type(None))):
+                return value
+            if isinstance(value, Mapping):
+                return {str(key): canonical(item, seen) for key, item in value.items()}
+            if isinstance(value, (list, tuple)):
+                return [canonical(item, seen) for item in value]
+            identity = id(value)
+            if identity in seen:
+                raise IntegrityMiddlewareDenied("provider/tool result contains a cycle")
+            seen.add(identity)
+            try:
+                for method in ("model_dump", "to_dict", "dict"):
+                    converter = getattr(value, method, None)
+                    if callable(converter):
+                        return canonical(converter(), seen)
+                attributes = getattr(value, "__dict__", None)
+                if isinstance(attributes, Mapping):
+                    public = {
+                        str(key): item
+                        for key, item in attributes.items()
+                        if isinstance(key, str) and not key.startswith("_") and not callable(item)
+                    }
+                    if public:
+                        return canonical(public, seen)
+            finally:
+                seen.discard(identity)
+            raise IntegrityMiddlewareDenied("provider/tool result cannot be canonically read back")
+
+        return core.sha256_json(canonical(result, set()))
 
     def on_llm_execution(self, *, request: Any, next_call: Any, **context: Any) -> Any:
         if not self.active:
@@ -335,30 +369,35 @@ class HermesIntegrityRuntime:
         identity = self._identity(request, context)
         attempt_id = identity.attempt_id
         request_digest = self.core.request_hash(request)
+        try:
+            _envelope, new_attempt = self.envelopes.seal_or_assert_exact(identity, request)
+        except Exception as exc:
+            self._deny(f"late-bound provider request was not sealed: {exc}")
         if self.broker is not None:
-            begin = self.broker.begin_attempt(
-                attempt_id=attempt_id,
-                role_id=identity.role_id,
-                subject_hashes={"request": request_digest},
-            )
-            runtime_receipt = self.broker.runtime_identity(
-                attempt_id=attempt_id,
-                role_id=identity.role_id,
-                subject_hashes={"identity": self.core.sha256_json(identity.to_dict())},
-                exact_model_id=identity.exact_model_id,
-                provider=identity.provider,
-                endpoint_identity=identity.endpoint_identity,
-            )
             authorization = self.broker.authorization_decision(
                 attempt_id=attempt_id,
                 role_id=identity.role_id,
                 subject_hashes={"request": request_digest},
                 decision="ALLOW",
             )
-            assert self.ledger is not None
-            self.ledger.append(begin, state="CANDIDATE", subject_id=f"attempt:{attempt_id}", expected_attempt_id=attempt_id)
-            self.ledger.append(runtime_receipt, state="P1_TOOL_BACKED", subject_id=f"runtime:{attempt_id}", expected_attempt_id=attempt_id)
-            self.ledger.append(authorization, state="P1_TOOL_BACKED", subject_id=f"authorization:{attempt_id}", expected_attempt_id=attempt_id)
+            if new_attempt:
+                begin = self.broker.begin_attempt(
+                    attempt_id=attempt_id,
+                    role_id=identity.role_id,
+                    subject_hashes={"request": request_digest},
+                )
+                runtime_receipt = self.broker.runtime_identity(
+                    attempt_id=attempt_id,
+                    role_id=identity.role_id,
+                    subject_hashes={"identity": self.core.sha256_json(identity.to_dict())},
+                    exact_model_id=identity.exact_model_id,
+                    provider=identity.provider,
+                    endpoint_identity=identity.endpoint_identity,
+                )
+                assert self.ledger is not None
+                self.ledger.append(begin, state="CANDIDATE", subject_id=f"attempt:{attempt_id}", expected_attempt_id=attempt_id)
+                self.ledger.append(runtime_receipt, state="P1_TOOL_BACKED", subject_id=f"runtime:{attempt_id}", expected_attempt_id=attempt_id)
+                self.ledger.append(authorization, state="P1_TOOL_BACKED", subject_id=f"authorization:{attempt_id}", expected_attempt_id=attempt_id)
         else:
             authorization = context.get("authorization_receipt") or context.get("integrity_authorization_receipt")
         authorization_receipt = self._verify(
@@ -368,11 +407,6 @@ class HermesIntegrityRuntime:
             subject=request_digest,
             role_id=identity.role_id,
         )
-        try:
-            envelope = self.envelopes.seal(identity, request)
-            envelope.assert_exact_request(request, identity)
-        except Exception as exc:
-            self._deny(f"late-bound provider request was not sealed: {exc}")
         # The provider is reached only after the synchronous authorization
         # check.  Downstream exceptions are not swallowed by this adapter.
         result = next_call(request)
@@ -406,6 +440,7 @@ class HermesIntegrityRuntime:
             self._deny("MODEL_CALL receipt request-id binding mismatch")
         assert self.ledger is not None
         self.ledger.append(parsed, state="P1_TOOL_BACKED", subject_id=f"model:{attempt_id}", expected_attempt_id=attempt_id)
+        self._evidence_state = "P1_TOOL_BACKED"
         return result
 
     def on_tool_execution(self, *, tool_name: str, args: Mapping[str, Any], next_call: Any, **context: Any) -> Any:
@@ -449,7 +484,7 @@ class HermesIntegrityRuntime:
                     role_ceiling=self.config.get("role_ceiling", "C0"),
                     task_ceiling=self.config.get("task_ceiling", "C0"),
                     certificate=certificate,
-                    evidence_state=str(context.get("evidence_state", "CANDIDATE")),
+                    evidence_state=self._evidence_state,
                     policy_generation=self.config.get("policy_generation"),
                     authorization_receipt=authorization_receipt,
                     attempt_id=attempt_id,

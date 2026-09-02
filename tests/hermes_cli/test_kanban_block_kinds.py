@@ -78,6 +78,31 @@ def test_block_loop_detected_event_emitted(kanban_home: Path) -> None:
         assert payload.get("kind") == "capability"
 
 
+def test_owner_command_center_block_loop_stays_in_owner_queue(kanban_home: Path) -> None:
+    with kb.connect_closing() as conn:
+        tid = kb.create_task(
+            conn,
+            title="owner envelope",
+            body='{"goal":"bounded"}',
+            assignee="worker",
+            created_by="owner-command-center",
+        )
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (tid,))
+        assert kb.claim_task(conn, tid, claimer="worker") is not None
+        kb.block_task(conn, tid, reason="needs owner", kind="capability")
+        kb.unblock_task(conn, tid)
+        _make_running_again(conn, tid)
+        kb.block_task(conn, tid, reason="needs owner", kind="capability")
+
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "blocked"
+        assert task.body == '{"goal":"bounded"}'
+        events = [event for event in kb.list_events(conn, tid) if event.kind == "blocked"]
+        assert (events[-1].payload or {}).get("owner_escalation_required") is True
+
+
 # ---------------------------------------------------------------------------
 # Dependency routing
 # ---------------------------------------------------------------------------
@@ -108,5 +133,4 @@ def test_dependency_then_parent_done_promotes(kanban_home: Path) -> None:
 # ---------------------------------------------------------------------------
 # Validation + back-compat
 # ---------------------------------------------------------------------------
-
 

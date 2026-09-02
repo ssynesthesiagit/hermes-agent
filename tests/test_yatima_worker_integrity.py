@@ -50,13 +50,14 @@ class YatimaWorkerIntegrityTests(unittest.TestCase):
                     "goal": "Read the integrated status and make no changes.",
                     "doneWhen": "Return the active project, blocker, and next action.",
                     "constraints": ["read only", "no follow-on jobs"],
-                    "writeAuthority": "NONE",
+                    "writeAuthority": "READ_ONLY",
                     "project": "yatima",
                 }
             ),
             project_id="yatima",
             current_run_id=1,
             max_runtime_seconds=900,
+            model_override="gemma4-26b-a4b",
         )
 
     def test_bundle_is_task_scoped_and_host_observed_receipts_are_real(self):
@@ -85,6 +86,18 @@ class YatimaWorkerIntegrityTests(unittest.TestCase):
             self.assertEqual(k3_settings["scope"]["task_id"], "t_owner_canary")
             self.assertEqual(k3_settings["scope"]["attempt_id"], "t_owner_canary:run:1")
             self.assertEqual(k3_settings["context_required_fields"], ["task_id"])
+            integrity_config = json.loads(env["YATIMA_INTEGRITY_WORKER_CONFIG_JSON"])
+            self.assertEqual(integrity_config["task_ceiling"], "C0")
+            self.assertEqual(
+                integrity_config["capability_certificate"]["exact_model_id"],
+                "gemma4-26b-a4b",
+            )
+            self.assertIn("read_file", integrity_config["capability_certificate"]["allowed_tools"])
+            self.assertNotIn("terminal", integrity_config["capability_certificate"]["allowed_tools"])
+            capability = json.loads(Path(prepared["capability_path"]).read_text(encoding="utf-8"))
+            self.assertEqual(capability, prepared["capability_certificate"])
+            self.assertEqual(capability["tier"], "C0")
+            self.assertNotIn("private_key", json.dumps(capability))
             capsule = json.loads(Path(k3_settings["capsule_path"]).read_text(encoding="utf-8"))
             self.assertEqual(capsule["owner_request"]["objective"], "Read the integrated status and make no changes.")
 
@@ -99,8 +112,12 @@ class YatimaWorkerIntegrityTests(unittest.TestCase):
             self.assertIsNotNone(runtime.broker)
             self.assertNotIn("YATIMA_INTEGRITY_WORKER_CONFIG_JSON", os.environ)
 
-            request = {"model": "model-a", "input": "hello"}
-            response = {"id": "response-1", "output": "ok"}
+            request = {"model": "gemma4-26b-a4b", "input": "hello"}
+            response = SimpleNamespace(
+                id="response-1",
+                model="gemma4-26b-a4b",
+                choices=[SimpleNamespace(index=0, message=SimpleNamespace(content="ok"))],
+            )
             value = runtime.on_llm_execution(
                 request=request,
                 next_call=lambda final: response,
@@ -108,10 +125,30 @@ class YatimaWorkerIntegrityTests(unittest.TestCase):
                 session_id="hermes-session-1",
                 api_request_id="api-request-1",
                 provider="provider-a",
-                model="model-a",
+                model="gemma4-26b-a4b",
                 base_url="http://model.invalid/v1",
             )
-            self.assertEqual(value, response)
+            self.assertIs(value, response)
+            retry_value = runtime.on_llm_execution(
+                request=request,
+                next_call=lambda final: {"id": "response-2", "output": "retry-ok"},
+                task_id="t_owner_canary",
+                session_id="hermes-session-1",
+                api_request_id="api-request-1",
+                provider="provider-a",
+                model="gemma4-26b-a4b",
+                base_url="http://model.invalid/v1",
+            )
+            self.assertEqual(retry_value["output"], "retry-ok")
+            with self.assertRaises(integrity_adapter.IntegrityMiddlewareDenied):
+                runtime.on_tool_execution(
+                    tool_name="terminal",
+                    args={"command": "touch forbidden"},
+                    next_call=lambda args: self.fail("read-only terminal must not run"),
+                    task_id="t_owner_canary",
+                    session_id="hermes-session-1",
+                    api_request_id="api-request-1",
+                )
             tool_value = runtime.on_tool_execution(
                 tool_name="file_read",
                 args={"path": "README.md"},
@@ -128,6 +165,7 @@ class YatimaWorkerIntegrityTests(unittest.TestCase):
                     "BEGIN_ATTEMPT",
                     "RUNTIME_IDENTITY",
                     "AUTHORIZATION_DECISION",
+                    "MODEL_CALL",
                     "MODEL_CALL",
                     "TOOL_START",
                     "TOOL_END",
@@ -168,6 +206,57 @@ class YatimaWorkerIntegrityTests(unittest.TestCase):
                     provider="provider-a",
                     model="model-a",
                 )
+
+    def test_isolated_write_envelope_reaches_c1_only_after_verified_model_call(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            profile_home = root / "profile"
+            profile_home.mkdir()
+            task = self._task()
+            body = json.loads(task.body)
+            body["writeAuthority"] = "REPOSITORY_WRITES_ISOLATED"
+            task.body = json.dumps(body)
+            env = {"HERMES_HOME": str(profile_home)}
+            prepare_worker_security(
+                task=task,
+                profile="brain_omarchy",
+                env=env,
+                board="yatima-owner-dispatch",
+                settings={
+                    "worker_bundle_enabled": True,
+                    "core_path": str(K3_CORE),
+                    "integrity_core_path": str(INTEGRITY_CORE),
+                    "integrity_state_root": str(root / "integrity-state"),
+                },
+            )
+            config = json.loads(env["YATIMA_INTEGRITY_WORKER_CONFIG_JSON"])
+            self.assertEqual(config["task_ceiling"], "C1")
+            self.assertIn("terminal", config["capability_certificate"]["allowed_tools"])
+            os.environ["YATIMA_INTEGRITY_WORKER_CONFIG_JSON"] = env[
+                "YATIMA_INTEGRITY_WORKER_CONFIG_JSON"
+            ]
+            runtime = _load_integrity_module().build_integrity_runtime(_Context())
+            with self.assertRaises(Exception):
+                runtime.on_tool_execution(
+                    tool_name="terminal", args={"command": "true"},
+                    next_call=lambda args: self.fail("C1 requires a verified model call first"),
+                    task_id="t_owner_canary", session_id="hermes-session-1",
+                    api_request_id="api-request-write",
+                )
+            runtime.on_llm_execution(
+                request={"model": "gemma4-26b-a4b", "input": "write task"},
+                next_call=lambda request: {"id": "response-write", "output": "ok"},
+                task_id="t_owner_canary", session_id="hermes-session-1",
+                api_request_id="api-request-write", provider="custom",
+                model="gemma4-26b-a4b", base_url="http://127.0.0.1:11437/v1",
+            )
+            value = runtime.on_tool_execution(
+                tool_name="terminal", args={"command": "true"},
+                next_call=lambda args: {"exit_code": 0},
+                task_id="t_owner_canary", session_id="hermes-session-1",
+                api_request_id="api-request-write",
+            )
+            self.assertEqual(value, {"exit_code": 0})
 
 
 if __name__ == "__main__":
