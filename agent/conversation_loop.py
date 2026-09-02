@@ -3393,6 +3393,16 @@ def run_conversation(
                         api_mode=agent.api_mode,
                         api_call_count=api_call_count,
                         middleware_trace=list(_llm_middleware_trace),
+                        final_request_resolver=(
+                            lambda value: agent._get_transport().preflight_kwargs(
+                                value,
+                                allow_stream=False,
+                                is_github_responses=agent._is_copilot_url(),
+                                sanitize_harmony_tokens=agent._is_codex_backend(),
+                            )
+                            if agent.api_mode == "codex_responses"
+                            else value
+                        ),
                     )
                 finally:
                     if _redirect_lock is not None:

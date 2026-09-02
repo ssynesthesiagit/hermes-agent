@@ -10721,6 +10721,32 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
         return None
 
 
+def _resolve_worker_yatima_settings(hermes_home: Optional[str]) -> Optional[dict[str, Any]]:
+    """Return the explicit per-profile Yatima worker security settings."""
+
+    if not hermes_home:
+        return None
+    try:
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_cli.config import load_config
+
+        token = set_hermes_home_override(hermes_home)
+        try:
+            cfg = load_config()
+        finally:
+            reset_hermes_home_override(token)
+        plugins = cfg.get("plugins", {}) if isinstance(cfg, Mapping) else {}
+        entries = plugins.get("entries", {}) if isinstance(plugins, Mapping) else {}
+        entry = entries.get("yatima-k3", {}) if isinstance(entries, Mapping) else {}
+        settings = entry.get("settings", {}) if isinstance(entry, Mapping) else {}
+        if not isinstance(settings, Mapping) or settings.get("worker_bundle_enabled") is not True:
+            return None
+        return dict(settings)
+    except Exception as exc:
+        _log.debug("kanban worker: could not resolve Yatima security settings (%s)", exc)
+        return None
+
+
 _retagged_workspace_roots: set[str] = set()
 
 
@@ -10870,6 +10896,20 @@ def _default_spawn(
     # what the tool reads — set it explicitly here so comments are
     # attributed correctly regardless of how the child loads config.
     env["HERMES_PROFILE"] = profile_arg
+
+    yatima_settings = _resolve_worker_yatima_settings(env.get("HERMES_HOME"))
+    if yatima_settings is not None:
+        from hermes_cli.yatima_worker_integrity import prepare_worker_security
+
+        prepared = prepare_worker_security(
+            task=task,
+            profile=profile_arg,
+            env=env,
+            settings=yatima_settings,
+            board=resolved_board,
+        )
+        if prepared.get("activated") is not True:
+            raise RuntimeError("Yatima worker security bundle did not activate")
 
     # A worker must NEVER boot the interactive TUI: an inherited HERMES_TUI=1
     # or a `display.interface: tui` in the profile's config would send the

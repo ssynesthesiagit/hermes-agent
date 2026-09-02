@@ -199,6 +199,10 @@ def run_llm_execution_middleware(
         next_call,
         request=request,
         original_request=context.pop("original_request", request),
+        _fail_closed_on_error=any(
+            bool(getattr(callback, "_integrity_fail_closed", False))
+            for callback in callbacks
+        ),
         **context,
     )
 
@@ -220,6 +224,10 @@ def run_tool_execution_middleware(
         tool_name=tool_name,
         args=args,
         original_args=context.pop("original_args", args),
+        _fail_closed_on_error=any(
+            bool(getattr(callback, "_integrity_fail_closed", False))
+            for callback in callbacks
+        ),
         **context,
     )
 
@@ -257,6 +265,18 @@ def _run_execution_chain(
     terminal_call: Callable[[Any], Any],
     **kwargs: Any,
 ) -> Any:
+    # Integrity middleware must observe the payload after ordinary wrappers
+    # have finished rewriting it.  The marker is host-owned (the plugin cannot
+    # opt an arbitrary callback into this path by returning data), and moving
+    # marked callbacks to the boundary keeps a later plugin from changing the
+    # request after authorization/envelope binding.
+    protected = [callback for callback in callbacks if getattr(callback, "_integrity_fail_closed", False)]
+    if protected:
+        callbacks = [callback for callback in callbacks if not getattr(callback, "_integrity_fail_closed", False)] + protected
+    fail_closed_on_error = bool(kwargs.pop("_fail_closed_on_error", False)) or any(
+        bool(getattr(callback, "_integrity_fail_closed", False))
+        for callback in callbacks
+    )
     payload_key = "request" if "request" in kwargs else "args"
 
     class _DownstreamExecutionError(Exception):
@@ -301,6 +321,12 @@ def _run_execution_chain(
         except _DownstreamExecutionError as exc:
             raise exc.original
         except Exception as exc:
+            if fail_closed_on_error:
+                # An integrity callback marks this chain as a protected
+                # boundary.  Do not apply the historical exception-isolation
+                # fallback, which would otherwise continue to the provider or
+                # tool after an authorization/middleware failure.
+                raise
             logger.warning(
                 "Middleware '%s' callback %s raised: %s",
                 kind,
