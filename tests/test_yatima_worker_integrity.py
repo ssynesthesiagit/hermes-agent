@@ -87,7 +87,7 @@ class YatimaWorkerIntegrityTests(unittest.TestCase):
             self.assertEqual(k3_settings["scope"]["attempt_id"], "t_owner_canary:run:1")
             self.assertEqual(k3_settings["context_required_fields"], ["task_id"])
             integrity_config = json.loads(env["YATIMA_INTEGRITY_WORKER_CONFIG_JSON"])
-            self.assertEqual(integrity_config["task_ceiling"], "C0")
+            self.assertEqual(integrity_config["task_ceiling"], "C1")
             self.assertEqual(
                 integrity_config["capability_certificate"]["exact_model_id"],
                 "gemma4-26b-a4b",
@@ -96,7 +96,7 @@ class YatimaWorkerIntegrityTests(unittest.TestCase):
             self.assertNotIn("terminal", integrity_config["capability_certificate"]["allowed_tools"])
             capability = json.loads(Path(prepared["capability_path"]).read_text(encoding="utf-8"))
             self.assertEqual(capability, prepared["capability_certificate"])
-            self.assertEqual(capability["tier"], "C0")
+            self.assertEqual(capability["tier"], "C1")
             self.assertNotIn("private_key", json.dumps(capability))
             capsule = json.loads(Path(k3_settings["capsule_path"]).read_text(encoding="utf-8"))
             self.assertEqual(capsule["owner_request"]["objective"], "Read the integrated status and make no changes.")

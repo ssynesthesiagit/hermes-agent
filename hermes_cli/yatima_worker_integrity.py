@@ -284,13 +284,17 @@ def prepare_worker_security(
     quarantine_root = state_root / "quarantine"
     quarantine_root.mkdir(parents=True, exist_ok=True, mode=0o700)
     write_authority = str(envelope.get("writeAuthority", "READ_ONLY"))
-    task_ceiling = "C1" if write_authority == "REPOSITORY_WRITES_ISOLATED" else "C0"
+    # An owner-dispatched model turn is at least routine-assistant work (C1)
+    # under the controlling capability taxonomy.  C0 is reserved for purely
+    # deterministic host checks.  Write authority remains an independent,
+    # explicit envelope boundary enforced by the per-task tool allow-list.
+    task_ceiling = "C1"
     tool_tiers = dict(_READ_ONLY_TOOL_TIERS)
     tool_tiers.update(_WRITE_TOOL_TIERS)
     allowed_tools = sorted(
-        _READ_ONLY_TOOL_TIERS
-        if task_ceiling == "C0"
-        else {*_READ_ONLY_TOOL_TIERS, *_WRITE_TOOL_TIERS}
+        {*_READ_ONLY_TOOL_TIERS, *_WRITE_TOOL_TIERS}
+        if write_authority == "REPOSITORY_WRITES_ISOLATED"
+        else _READ_ONLY_TOOL_TIERS
     )
     exact_model_id = str(getattr(task, "model_override", None) or "")
     certificate_id = f"owner-{body_hash[:16]}"
