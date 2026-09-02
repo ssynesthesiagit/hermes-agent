@@ -5858,6 +5858,11 @@ def run_conversation(
                         messages, system_message,
                         approx_tokens=estimate_request_tokens_rough(api_messages, tools=agent.tools or None),
                         task_id=effective_task_id,
+                        # #100661: the provider proved the request does not fit.
+                        # Ignore the summary-failure cooldown for this ONE
+                        # attempt (bounded by max_compression_attempts) instead
+                        # of deferring every turn until the ladder lapses.
+                        bypass_cooldown=True,
                     )
                     if messages is _overflow_input and compression_skipped_due_to_lock(agent):
                         # #69870 lock-skip: the provider proved the request
@@ -6034,6 +6039,7 @@ def run_conversation(
                                 messages, system_message,
                                 approx_tokens=request_input_estimate,
                                 task_id=effective_task_id,
+                                bypass_cooldown=True,  # #100661 provider-proven overflow
                             )
                             if messages is _overflow_input and compression_skipped_due_to_lock(agent):
                                 compression_attempts -= 1
@@ -6197,6 +6203,11 @@ def run_conversation(
                         messages, system_message,
                         approx_tokens=estimate_request_tokens_rough(api_messages, tools=agent.tools or None),
                         task_id=effective_task_id,
+                        # #100661: the provider proved the request does not fit.
+                        # Ignore the summary-failure cooldown for this ONE
+                        # attempt (bounded by max_compression_attempts) instead
+                        # of deferring every turn until the ladder lapses.
+                        bypass_cooldown=True,
                     )
                     if messages is _overflow_input and compression_skipped_due_to_lock(agent):
                         # #69870 lock-skip: the provider proved the request
