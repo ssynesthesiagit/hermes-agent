@@ -141,6 +141,9 @@ hermes peer list
 hermes peer dm spark < /tmp/dm.txt        # message body from a file (nothing shell-interpreted)
 hermes peer dm @researcher@spark < /tmp/dm.txt # direct @bot@machine address
 hermes peer dm spark/researcher < /tmp/dm.txt  # legacy equivalent
+hermes peer run spark --idempotency-key ticket-123 < /tmp/long-task.txt
+hermes peer status spark run_abc123
+hermes peer stop spark run_abc123
 ```
 
 When the remote machine runs independent per-profile gateways instead of one
@@ -163,11 +166,27 @@ its exact agent routes.
 
 `hermes peer dm` delivers into the remote agent's canonical Bot Chat over the peer's existing API server, runs one agent turn there, and prints the reply on stdout — the exact cross-machine twin of the local `hermes -p <bot> chat` command.
 
+Use `peer dm` only for short queries and receipts because it holds one HTTP
+connection until the turn finishes. For a long turn, `peer run` returns a
+`run_id` immediately; poll it with `peer status`. The run inherits the
+canonical Bot Chat transcript, and a stable `--idempotency-key` makes a retry
+return the original run instead of starting duplicate work. Use `peer stop`
+with that exact run ID to interrupt it without targeting another turn.
+
 Once a peer is registered, the messaging protocol taught to every Bot Chat (`agent.bot_mode_protocol`) automatically includes the peer roster and its exact `@bot@machine` addresses. A Bot calls `message_agent(target="@researcher@spark", …)` and Hermes sends directly to that destination profile's canonical Bot Chat—no local Bot is used as an intermediary. The older `spark/researcher` form and bare `spark` main-agent target remain compatible. Registering or removing a peer refreshes each Bot Chat's protocol on its next message (capability epoch).
 
 Requirements: the peer machine runs the `api_server` gateway platform with a strong `API_SERVER_KEY`; reachability is your network's business (LAN, Tailscale, VPN). Machine-default and agent-specific keys are credentials and live in each isolated profile's `.env`; `--all-profiles` safely performs that propagation in one command. Peer names, URLs, exact agent endpoints, and the non-secret remote agent directory live in `config.yaml` under `bot_peers`.
 
 If the peer was previously paired only in the default profile, rerun `peer add` with `--all-profiles` and omit `--key`: Hermes reuses that existing machine-root peer key internally and never prints it or places it in a new command line.
+
+:::note One-way reachability (NAT)
+Cross-gateway links are direct gateway-to-gateway connections — Desktop is a
+viewer, not a relay. A gateway behind home NAT can dial out to a public peer
+(laptop → VPS works), but the reverse direction has no inbound route
+(VPS → home fails) unless your network provides one. If your Group Chat spans
+a NAT boundary, put the room's authority on the host every participant can
+reach (typically the public VPS), or bridge the network with Tailscale/VPN.
+:::
 
 ## Bots across machines
 

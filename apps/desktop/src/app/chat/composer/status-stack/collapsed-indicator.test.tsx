@@ -44,6 +44,22 @@ describe('ComposerStatusStack collapsed todo indicator', () => {
     expect(content?.className).toContain('group-hover/status-stack:opacity-100')
   })
 
+  it('shows a running indicator while the todo group is expanded', () => {
+    $todosBySession.set({
+      'session-1': [{ content: 'Wire the status stack', id: '1', status: 'in_progress' }]
+    })
+
+    render(
+      <MemoryRouter>
+        <ComposerStatusStack queue={null} sessionId="session-1" />
+      </MemoryRouter>
+    )
+
+    expect(screen.getByText('Wire the status stack')).toBeTruthy()
+    expect(screen.getAllByRole('status').length).toBeGreaterThan(0)
+    expect(screen.getByText('Tasks 0/1')).toBeTruthy()
+  })
+
   it('shows a running indicator next to the collapsed todo label', () => {
     $todosBySession.set({
       'session-1': [{ content: 'Wire the status stack', id: '1', status: 'in_progress' }]
