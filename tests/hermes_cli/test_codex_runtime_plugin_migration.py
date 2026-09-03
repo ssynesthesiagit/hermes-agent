@@ -529,3 +529,19 @@ class TestHermesHomeLeakGuard:
             f"HERMES_HOME should not be set when env var is unset, got: "
             f"{env.get('HERMES_HOME')!r}"
         )
+
+    def test_hermes_tools_forwards_task_scoped_kanban_environment(self):
+        entry = _build_hermes_tools_mcp_entry()
+        forwarded = set(entry.get("env_vars") or [])
+        assert {
+            "HERMES_HOME",
+            "HERMES_PROFILE",
+            "HERMES_TENANT",
+            "HERMES_KANBAN_TASK",
+            "HERMES_KANBAN_RUN_ID",
+            "HERMES_KANBAN_CLAIM_LOCK",
+            "HERMES_KANBAN_DB",
+            "HERMES_KANBAN_BOARD",
+            "HERMES_KANBAN_WORKSPACE",
+            "HERMES_KANBAN_WORKSPACES_ROOT",
+        } <= forwarded
