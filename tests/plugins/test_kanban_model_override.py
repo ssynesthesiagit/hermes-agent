@@ -82,6 +82,22 @@ def test_set_and_clear_model_override(conn):
     assert t.provider_override is None
 
 
+def test_owner_dispatch_model_override_is_immutable(conn):
+    tid = kb.create_task(
+        conn,
+        title="owner envelope",
+        assignee="brain_omarchy",
+        created_by="owner-command-center",
+        model_override="current-local-test",
+        provider_override="current-local-provider",
+    )
+    with pytest.raises(RuntimeError, match="owner-dispatch model/provider binding is immutable"):
+        kb.set_model_override(conn, tid, "different-model", provider="different-provider")
+    task = kb.get_task(conn, tid)
+    assert task.model_override == "current-local-test"
+    assert task.provider_override == "current-local-provider"
+
+
 def test_provider_without_model_rejected(conn):
     tid = kb.create_task(conn, title="t", assignee="worker")
     with pytest.raises(ValueError):

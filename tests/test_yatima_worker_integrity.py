@@ -42,6 +42,8 @@ class _Context:
 
 class YatimaWorkerIntegrityTests(unittest.TestCase):
     def _task(self):
+        model_id = "current-local-test"
+        provider = "current-local-provider"
         return SimpleNamespace(
             id="t_owner_canary",
             title="Owner integrity canary",
@@ -52,12 +54,27 @@ class YatimaWorkerIntegrityTests(unittest.TestCase):
                     "constraints": ["read only", "no follow-on jobs"],
                     "writeAuthority": "READ_ONLY",
                     "project": "yatima",
+                    "ownerEnvelopeVersion": 1,
+                    "runtimeBinding": {
+                        "schemaVersion": "CURRENT_LOCAL_RUNTIME_BINDING_V1",
+                        "selected": {
+                            "routeId": model_id,
+                            "modelId": model_id,
+                            "hermesProvider": provider,
+                            "endpoint": "http://127.0.0.1:11999/v1",
+                            "parallelSlots": 1,
+                            "processing": False,
+                        },
+                        "activeRoutes": [],
+                    },
                 }
             ),
             project_id="yatima",
             current_run_id=1,
             max_runtime_seconds=900,
-            model_override="gemma4-26b-a4b",
+            model_override=model_id,
+            provider_override=provider,
+            created_by="owner-command-center",
         )
 
     def test_bundle_is_task_scoped_and_host_observed_receipts_are_real(self):
@@ -90,7 +107,7 @@ class YatimaWorkerIntegrityTests(unittest.TestCase):
             self.assertEqual(integrity_config["task_ceiling"], "C1")
             self.assertEqual(
                 integrity_config["capability_certificate"]["exact_model_id"],
-                "gemma4-26b-a4b",
+                "current-local-test",
             )
             self.assertIn("read_file", integrity_config["capability_certificate"]["allowed_tools"])
             self.assertNotIn("terminal", integrity_config["capability_certificate"]["allowed_tools"])
@@ -112,10 +129,10 @@ class YatimaWorkerIntegrityTests(unittest.TestCase):
             self.assertIsNotNone(runtime.broker)
             self.assertNotIn("YATIMA_INTEGRITY_WORKER_CONFIG_JSON", os.environ)
 
-            request = {"model": "gemma4-26b-a4b", "input": "hello"}
+            request = {"model": "current-local-test", "input": "hello"}
             response = SimpleNamespace(
                 id="response-1",
-                model="gemma4-26b-a4b",
+                model="current-local-test",
                 choices=[SimpleNamespace(index=0, message=SimpleNamespace(content="ok"))],
             )
             value = runtime.on_llm_execution(
@@ -125,7 +142,7 @@ class YatimaWorkerIntegrityTests(unittest.TestCase):
                 session_id="hermes-session-1",
                 api_request_id="api-request-1",
                 provider="provider-a",
-                model="gemma4-26b-a4b",
+                model="current-local-test",
                 base_url="http://model.invalid/v1",
             )
             self.assertIs(value, response)
@@ -136,7 +153,7 @@ class YatimaWorkerIntegrityTests(unittest.TestCase):
                 session_id="hermes-session-1",
                 api_request_id="api-request-1",
                 provider="provider-a",
-                model="gemma4-26b-a4b",
+                model="current-local-test",
                 base_url="http://model.invalid/v1",
             )
             self.assertEqual(retry_value["output"], "retry-ok")
@@ -174,6 +191,28 @@ class YatimaWorkerIntegrityTests(unittest.TestCase):
             registry = json.loads(Path(prepared["registry_path"]).read_text(encoding="utf-8"))
             self.assertEqual(len(registry["issuers"]), 1)
             self.assertNotIn("private_key", json.dumps(registry))
+
+    def test_owner_runtime_binding_mismatch_fails_before_worker_artifacts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            profile_home = root / "profile"
+            profile_home.mkdir()
+            task = self._task()
+            task.model_override = "different-model"
+            with self.assertRaisesRegex(Exception, "runtime binding does not match"):
+                prepare_worker_security(
+                    task=task,
+                    profile="brain_omarchy",
+                    env={"HERMES_HOME": str(profile_home)},
+                    board="yatima-owner-dispatch",
+                    settings={
+                        "worker_bundle_enabled": True,
+                        "core_path": str(K3_CORE),
+                        "integrity_core_path": str(INTEGRITY_CORE),
+                        "integrity_state_root": str(root / "integrity-state"),
+                    },
+                )
+            self.assertFalse((profile_home / "k3").exists())
 
     def test_worker_mode_fails_closed_without_request_identity(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -244,11 +283,11 @@ class YatimaWorkerIntegrityTests(unittest.TestCase):
                     api_request_id="api-request-write",
                 )
             runtime.on_llm_execution(
-                request={"model": "gemma4-26b-a4b", "input": "write task"},
+                request={"model": "current-local-test", "input": "write task"},
                 next_call=lambda request: {"id": "response-write", "output": "ok"},
                 task_id="t_owner_canary", session_id="hermes-session-1",
                 api_request_id="api-request-write", provider="custom",
-                model="gemma4-26b-a4b", base_url="http://127.0.0.1:11437/v1",
+                model="current-local-test", base_url="http://127.0.0.1:11999/v1",
             )
             value = runtime.on_tool_execution(
                 tool_name="terminal", args={"command": "true"},

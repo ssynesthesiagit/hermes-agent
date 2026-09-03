@@ -98,6 +98,30 @@ def _iso(value: datetime) -> str:
     return value.isoformat().replace("+00:00", "Z")
 
 
+def _validate_owner_runtime_binding(task: Any, envelope: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """Make the submitted runtime receipt operative for owner-dispatched work."""
+
+    is_owner_dispatch = (
+        getattr(task, "created_by", None) == "owner-command-center"
+        or envelope.get("ownerEnvelopeVersion") == 1
+    )
+    if not is_owner_dispatch:
+        return None
+    binding = envelope.get("runtimeBinding")
+    if not isinstance(binding, Mapping) or binding.get("schemaVersion") != "CURRENT_LOCAL_RUNTIME_BINDING_V1":
+        raise YatimaWorkerIntegrityError("owner-dispatch runtime binding is missing or invalid")
+    selected = binding.get("selected")
+    if not isinstance(selected, Mapping):
+        raise YatimaWorkerIntegrityError("owner-dispatch selected runtime is missing")
+    model_id = selected.get("modelId")
+    provider = selected.get("hermesProvider")
+    if not isinstance(model_id, str) or not model_id or not isinstance(provider, str) or not provider:
+        raise YatimaWorkerIntegrityError("owner-dispatch selected runtime identity is invalid")
+    if getattr(task, "model_override", None) != model_id or getattr(task, "provider_override", None) != provider:
+        raise YatimaWorkerIntegrityError("owner-dispatch runtime binding does not match worker route")
+    return selected
+
+
 def prepare_worker_security(
     *,
     task: Any,
@@ -122,6 +146,7 @@ def prepare_worker_security(
         raise YatimaWorkerIntegrityError("worker task body is not valid JSON") from exc
     if not isinstance(envelope, Mapping):
         raise YatimaWorkerIntegrityError("worker task body must be an object")
+    owner_runtime = _validate_owner_runtime_binding(task, envelope)
 
     goal = envelope.get("goal")
     if not isinstance(goal, str) or not goal.strip():
@@ -296,7 +321,10 @@ def prepare_worker_security(
         if write_authority == "REPOSITORY_WRITES_ISOLATED"
         else _READ_ONLY_TOOL_TIERS
     )
-    exact_model_id = str(getattr(task, "model_override", None) or "")
+    exact_model_id = str(
+        owner_runtime["modelId"] if owner_runtime is not None
+        else getattr(task, "model_override", None) or ""
+    )
     certificate_id = f"owner-{body_hash[:16]}"
     issuer_id = f"hermes-{profile_id}"
     capability_certificate = {

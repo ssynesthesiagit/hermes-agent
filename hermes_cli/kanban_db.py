@@ -3792,7 +3792,9 @@ def set_model_override(
     against a different backend, which is exactly the mismatch class this
     feature exists to kill).
 
-    Allowed on any non-archived task, including ``running`` ones — the
+    Allowed on any non-archived task except owner-command-center tasks, whose
+    model/provider route is frozen by the owner-dispatch receipt. For other
+    tasks, including ``running`` ones, the
     override only takes effect on the NEXT dispatch, so setting it on a
     running task that's about to be reclaimed/retried is the primary
     rate-limit-recovery flow. Returns True on success.
@@ -3805,12 +3807,14 @@ def set_model_override(
         provider = None
     with write_txn(conn):
         row = conn.execute(
-            "SELECT status FROM tasks WHERE id = ?", (task_id,)
+            "SELECT status, created_by FROM tasks WHERE id = ?", (task_id,)
         ).fetchone()
         if not row:
             return False
         if row["status"] == "archived":
             raise RuntimeError(f"cannot set model override on archived task {task_id}")
+        if row["created_by"] == "owner-command-center":
+            raise RuntimeError(f"owner-dispatch model/provider binding is immutable for {task_id}")
         conn.execute(
             "UPDATE tasks SET model_override = ?, provider_override = ? WHERE id = ?",
             (model, provider, task_id),
