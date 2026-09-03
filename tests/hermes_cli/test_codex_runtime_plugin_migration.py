@@ -162,6 +162,114 @@ class TestStripExistingManagedBlock:
 
 class TestMigrate:
 
+    def test_migrate_replaces_shadowed_unmanaged_mcp_server_without_duplicate(self, tmp_path):
+        """A Hermes server already present in user Codex config is replaced,
+        not duplicated, while unrelated user-owned servers remain untouched."""
+        import tomllib
+
+        target = tmp_path / "config.toml"
+        target.write_text(
+            '[mcp_servers.yatima_librarian]\n'
+            'command = "old-librarian"\n'
+            '\n'
+            '[mcp_servers.user_only]\n'
+            'command = "keep-me"\n'
+        )
+
+        report = migrate(
+            {"mcp_servers": {"yatima_librarian": {"command": "new-librarian"}}},
+            codex_home=tmp_path,
+            discover_plugins=False,
+            expose_hermes_tools=False,
+            default_permission_profile=None,
+        )
+
+        text = target.read_text()
+        assert report.written
+        assert text.count("[mcp_servers.yatima_librarian]") == 1
+        assert 'command = "new-librarian"' in text
+        assert "[mcp_servers.user_only]" in text
+        assert 'command = "keep-me"' in text
+        tomllib.loads(text)
+
+    def test_migrate_replaces_quoted_shadowed_server_and_nested_tables(self, tmp_path):
+        import tomllib
+
+        target = tmp_path / "config.toml"
+        target.write_text(
+            '[mcp_servers."yatima_librarian"]\n'
+            'command = "old-librarian"\n'
+            '\n'
+            '[mcp_servers."yatima_librarian".env]\n'
+            'TOKEN = "old-token"\n'
+            '\n'
+            '[mcp_servers.user_only]\n'
+            'command = "keep-me"\n'
+        )
+
+        migrate(
+            {"mcp_servers": {"yatima_librarian": {"command": "new-librarian"}}},
+            codex_home=tmp_path,
+            discover_plugins=False,
+            expose_hermes_tools=False,
+            default_permission_profile=None,
+        )
+
+        text = target.read_text()
+        parsed = tomllib.loads(text)
+        assert parsed["mcp_servers"]["yatima_librarian"] == {
+            "command": "new-librarian"
+        }
+        assert parsed["mcp_servers"]["user_only"] == {"command": "keep-me"}
+
+    @pytest.mark.parametrize("server_name", ["a#b", "a=b"])
+    def test_migrate_replaces_shadowed_quoted_server_with_special_characters(
+        self, tmp_path, server_name
+    ):
+        import tomllib
+
+        target = tmp_path / "config.toml"
+        target.write_text(
+            f'[mcp_servers."{server_name}"]\n'
+            'command = "old"\n'
+            '\n'
+            '[mcp_servers.user_only]\n'
+            'command = "keep-me"\n'
+        )
+
+        migrate(
+            {"mcp_servers": {server_name: {"command": "new"}}},
+            codex_home=tmp_path,
+            discover_plugins=False,
+            expose_hermes_tools=False,
+            default_permission_profile=None,
+        )
+
+        parsed = tomllib.loads(target.read_text())
+        assert parsed["mcp_servers"][server_name] == {"command": "new"}
+        assert parsed["mcp_servers"]["user_only"] == {"command": "keep-me"}
+
+    def test_migrate_refuses_invalid_generated_toml_and_preserves_original(self, tmp_path):
+        target = tmp_path / "config.toml"
+        original = (
+            '[mcp_servers]\n'
+            'yatima_librarian = { command = "old" }\n'
+            'user_only = { command = "keep-me" }\n'
+        )
+        target.write_text(original)
+
+        report = migrate(
+            {"mcp_servers": {"yatima_librarian": {"command": "new"}}},
+            codex_home=tmp_path,
+            discover_plugins=False,
+            expose_hermes_tools=False,
+            default_permission_profile=None,
+        )
+
+        assert not report.written
+        assert any("generated invalid Codex TOML" in error for error in report.errors)
+        assert target.read_text() == original
+
 
 
     def test_plugin_discovery_writes_plugin_blocks(self, tmp_path, monkeypatch):
