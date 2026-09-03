@@ -9,13 +9,14 @@ upstream NousResearch Hermes.
 
 1. [Canonical engineering handoff](HANDOFF.md)
 2. [Current status](CURRENT_STATUS.md)
-3. [Operations runbook](OPERATIONS_RUNBOOK.md)
-4. [Troubleshooting guide](TROUBLESHOOTING.md)
-5. [Safe upstream updates and recovery](UPDATE_AND_RECOVERY.md)
-6. [Local-profile A2A routing](A2A_LOCAL_PROFILE_ROUTING.md)
-7. [Fresh-task prompt](FRESH_CHAT_PROMPT.md)
-8. [Incident/fix template](INCIDENT_TEMPLATE.md)
-9. [`YATIMA_CUSTOM.md`](../../YATIMA_CUSTOM.md) at the repository root
+3. [Hermes v0.21.0 integration record](INTEGRATION_2026-09-02_HERMES_V0210.md)
+4. [Operations runbook](OPERATIONS_RUNBOOK.md)
+5. [Troubleshooting guide](TROUBLESHOOTING.md)
+6. [Safe upstream updates and recovery](UPDATE_AND_RECOVERY.md)
+7. [Local-profile A2A routing](A2A_LOCAL_PROFILE_ROUTING.md)
+8. [Fresh-task prompt](FRESH_CHAT_PROMPT.md)
+9. [Incident/fix template](INCIDENT_TEMPLATE.md)
+10. [`YATIMA_CUSTOM.md`](../../YATIMA_CUSTOM.md) at the repository root
 
 ## Repository boundaries
 

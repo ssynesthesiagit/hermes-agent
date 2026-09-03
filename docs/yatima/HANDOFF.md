@@ -8,11 +8,19 @@ the project without relying on chat history.
 
 - Repository: `https://github.com/ssynesthesiagit/hermes-agent`
 - Custom branch: `codex/yatima-custom`
+- Verified v0.21.0 integration branch: `codex/yatima-v0.21-integration`
+- Verified integration code checkpoint before documentation:
+  `8d2f55841`
 - Checkpoint when this handoff was written:
   `e3f287e9af3b59a9d71cf80b0f4ea1f272aceb7e`
 - Upstream remote: `https://github.com/NousResearch/hermes-agent.git`
 - Upstream integration must happen on a temporary branch, never directly in a
   live installation.
+
+The integration branch contains the official v0.21.0 release plus bounded
+post-release security, auth, messaging, updater, cache-observability, and
+compression fixes. It is source-verified but not deployed. Read
+`INTEGRATION_2026-09-02_HERMES_V0210.md` before merging or installing it.
 
 The checkpoint is the source of truth for the customized Windows and Linux
 desktop/gateway code, the hosted mobile UI, local-profile A2A routing, and the

@@ -10,8 +10,10 @@ here.
 
 - `main` follows `NousResearch/hermes-agent` and should remain easy to fast-forward.
 - `codex/yatima-custom` contains the Yatima customization set.
-- The customization branch currently starts from upstream commit
-  `8286c46502e1f59eafdfabcf5af998024f64dfb8`.
+- `codex/yatima-v0.21-integration` merges the official Hermes v0.21.0
+  release commit `29112bef099274229cadff79cdff7bf7b99c4b77` with the Yatima
+  customization set. It is the verified integration candidate; it is not yet
+  a deployed release.
 
 This first synchronized commit is a development checkpoint, not a release tag.
 Some desktop pop-out chat behavior is still undergoing final verification.
@@ -29,6 +31,18 @@ Some desktop pop-out chat behavior is still undergoing final verification.
 - [Documentation index](docs/yatima/README.md)
 
 ## Checkpoint validation
+
+The v0.21.0 integration and bounded post-release backports were verified on
+2026-09-02. The broad Desktop UI suite passed 6,830 tests, Desktop renderer,
+Electron, and e2e TypeScript projects passed typecheck, the Android unit task
+and debug APK assembly passed, and the focused Python gates for Yatima routing,
+memory, cache, compression, auth, Telegram, updater, and security behavior
+passed. See
+[the v0.21.0 integration record](docs/yatima/INTEGRATION_2026-09-02_HERMES_V0210.md)
+for exact commands, counts, retained work, and rollout limits.
+
+The earlier v0.20.6-era checkpoint remains recorded below as historical
+evidence.
 
 The synchronized source was byte-compared with the 35 intended working-tree
 source/test files before commit. The following focused checks passed on

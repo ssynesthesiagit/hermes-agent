@@ -1,6 +1,19 @@
 # Current status
 
-Recorded 2026-08-23 for branch `codex/yatima-custom`.
+Updated 2026-09-02 for branch `codex/yatima-v0.21-integration`.
+
+The current verified code checkpoint before this status update is
+`8d2f55841`. It contains the official Hermes v0.21.0 release, retained Yatima
+Android/memory/session/A2A/CUA features, and bounded post-release fixes for Git
+execution security, OAuth/Nous credentials, Bot delivery, Telegram state,
+desktop updating, cache telemetry, and compression safety. It has not been
+deployed or used to restart a live gateway.
+
+See
+[INTEGRATION_2026-09-02_HERMES_V0210.md](INTEGRATION_2026-09-02_HERMES_V0210.md)
+for the exact integration evidence and remaining live acceptance gates.
+
+The following v0.20.6 checkpoint text is retained as historical evidence.
 
 The latest verified repository checkpoint before this documentation expansion is
 `e3f287e9af3b59a9d71cf80b0f4ea1f272aceb7e`. At the last fetch it was 4 commits
