@@ -651,6 +651,14 @@ def _build_hermes_tools_mcp_entry() -> dict:
             "HERMES_KANBAN_WORKSPACE",
             "HERMES_KANBAN_WORKSPACES_ROOT",
         ],
+        # Codex 0.148+ prompts before state-changing MCP calls. Native
+        # app-server workers intentionally keep approval_policy=never, so
+        # permit only terminal transitions that separately enforce current
+        # task/run ownership and reject delegated children.
+        "tools": {
+            "kanban_block": {"approval_mode": "approve"},
+            "kanban_complete": {"approval_mode": "approve"},
+        },
     }
     if env:
         out["env"] = env

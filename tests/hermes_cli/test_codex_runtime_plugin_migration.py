@@ -545,3 +545,12 @@ class TestHermesHomeLeakGuard:
             "HERMES_KANBAN_WORKSPACE",
             "HERMES_KANBAN_WORKSPACES_ROOT",
         } <= forwarded
+
+    def test_hermes_tools_auto_approves_only_task_terminal_tools(self):
+        entry = _build_hermes_tools_mcp_entry()
+
+        assert "default_tools_approval_mode" not in entry
+        assert entry["tools"] == {
+            "kanban_block": {"approval_mode": "approve"},
+            "kanban_complete": {"approval_mode": "approve"},
+        }
