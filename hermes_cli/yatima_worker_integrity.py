@@ -99,13 +99,18 @@ def _iso(value: datetime) -> str:
 
 
 def _validate_owner_runtime_binding(task: Any, envelope: Mapping[str, Any]) -> Mapping[str, Any] | None:
-    """Make the submitted runtime receipt operative for owner-dispatched work."""
+    """Accept submitted runtime receipts only from the trusted owner dispatcher."""
 
-    is_owner_dispatch = (
-        getattr(task, "created_by", None) == "owner-command-center"
-        or envelope.get("ownerEnvelopeVersion") == 1
+    trusted_owner_dispatch = getattr(task, "created_by", None) == "owner-command-center"
+    claims_owner_binding = (
+        envelope.get("ownerEnvelopeVersion") == 1
+        or isinstance(envelope.get("runtimeBinding"), Mapping)
     )
-    if not is_owner_dispatch:
+    if not trusted_owner_dispatch:
+        if claims_owner_binding:
+            raise YatimaWorkerIntegrityError(
+                "owner runtime binding requires trusted owner-command-center task creator"
+            )
         return None
     binding = envelope.get("runtimeBinding")
     if not isinstance(binding, Mapping) or binding.get("schemaVersion") != "CURRENT_LOCAL_RUNTIME_BINDING_V1":
@@ -115,8 +120,18 @@ def _validate_owner_runtime_binding(task: Any, envelope: Mapping[str, Any]) -> M
         raise YatimaWorkerIntegrityError("owner-dispatch selected runtime is missing")
     model_id = selected.get("modelId")
     provider = selected.get("hermesProvider")
+    route_id = selected.get("routeId")
+    endpoint = selected.get("endpoint")
     if not isinstance(model_id, str) or not model_id or not isinstance(provider, str) or not provider:
         raise YatimaWorkerIntegrityError("owner-dispatch selected runtime identity is invalid")
+    if (
+        not isinstance(route_id, str)
+        or not route_id
+        or route_id != model_id
+        or not isinstance(endpoint, str)
+        or not endpoint
+    ):
+        raise YatimaWorkerIntegrityError("owner-dispatch selected runtime receipt is invalid")
     if getattr(task, "model_override", None) != model_id or getattr(task, "provider_override", None) != provider:
         raise YatimaWorkerIntegrityError("owner-dispatch runtime binding does not match worker route")
     return selected
@@ -247,6 +262,29 @@ def prepare_worker_security(
             recorded_at=recorded_at,
         ),
     ]
+    if owner_runtime is not None:
+        runtime_binding_hash = hashlib.sha256(
+            json.dumps(
+                owner_runtime, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+        ).hexdigest()
+        records.append(
+            k3.ClassifiedInput(
+                kind="VERIFIED_RUNTIME_RECEIPT",
+                record_id=f"runtime-{task_id}-{run_id}",
+                payload={
+                    "configured_route": owner_runtime["routeId"],
+                    "actual_model": owner_runtime["modelId"],
+                    "actual_harness": owner_runtime["routeId"],
+                    "endpoint_identity": owner_runtime["endpoint"],
+                    "process_or_server_receipt": (
+                        f"kanban://{board}/{task_id}/runs/{run_id}"
+                        f"#runtime-binding-sha256={runtime_binding_hash}"
+                    ),
+                },
+                recorded_at=recorded_at,
+            )
+        )
     done_when = envelope.get("doneWhen")
     if isinstance(done_when, str) and done_when.strip():
         records.append(

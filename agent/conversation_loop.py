@@ -2098,8 +2098,21 @@ def run_conversation(
     # See agent/transports/codex_app_server_session.py for the adapter
     # and references/codex-app-server-runtime.md for the rationale.
     if agent.api_mode == "codex_app_server":
+        # Native Codex bypasses the normal api_messages build below, so compose
+        # the same ephemeral memory/plugin sidecar explicitly at this boundary.
+        # Keep ``messages`` untouched: Codex owns its internal thread replay,
+        # while Hermes retains the clean owner-authored transcript.
+        _codex_user_message = compose_user_api_content(
+            user_message,
+            _ext_prefetch_cache,
+            _plugin_user_context,
+        )
         return agent._run_codex_app_server_turn(
-            user_message=user_message,
+            user_message=(
+                _codex_user_message
+                if _codex_user_message is not None
+                else user_message
+            ),
             original_user_message=original_user_message,
             messages=messages,
             effective_task_id=effective_task_id,
