@@ -74,8 +74,10 @@ class TestApiModeAccepted:
 
 class TestRunConversationCodexPath:
     def test_plugin_context_reaches_codex_app_server_without_dirtying_history(
-        self, monkeypatch
+        self, monkeypatch, tmp_path
     ):
+        from hermes_state import SessionDB
+
         captured = {}
 
         def fake_run_turn(self, user_input: str, **kwargs):
@@ -94,16 +96,133 @@ class TestRunConversationCodexPath:
             lambda self: "thread-k3-1",
         )
         agent = _make_codex_agent()
-        with patch(
-            "hermes_cli.plugins.invoke_hook",
-            return_value=[{"context": "# Yatima K3 Task/Session Capsule"}],
-        ), patch.object(agent, "_spawn_background_review", return_value=None):
-            result = agent.run_conversation("hello")
+        db = SessionDB(db_path=tmp_path / "state.db")
+        agent._session_db = db
+        agent._session_db_created = False
+        agent.session_id = "session-k3-persistence"
+        setattr(agent, "_pending_cli_user_message", {"role": "user", "content": "hello"})
+        try:
+            with patch(
+                "hermes_cli.plugins.invoke_hook",
+                return_value=[{"context": "# Yatima K3 Task/Session Capsule"}],
+            ), patch.object(agent, "_spawn_background_review", return_value=None):
+                result = agent.run_conversation("hello")
+            stored = db.get_messages(agent.session_id)
+        finally:
+            db.close()
 
         assert captured["user_input"] == (
             "hello\n\n# Yatima K3 Task/Session Capsule"
         )
         assert result["messages"][0]["content"] == "hello"
+        assert result["messages"][0].get("api_content") is None
+        stored_user = next(message for message in stored if message["role"] == "user")
+        assert stored_user["content"] == "hello"
+        assert stored_user.get("api_content") is None
+
+    def test_ephemeral_plugin_sidecar_user_echo_is_not_persisted(
+        self, monkeypatch, tmp_path
+    ):
+        from agent.transports.codex_app_server_session import (
+            CodexAppServerSession,
+            TurnResult,
+        )
+        from hermes_state import SessionDB
+
+        marker = "# Yatima K3 Task/Session Capsule"
+        captured = {}
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            captured["user_input"] = user_input
+            return TurnResult(
+                final_text="ok",
+                projected_messages=[
+                    {"role": "user", "content": user_input},
+                    {"role": "assistant", "content": "ok"},
+                ],
+                turn_id="turn-k3-echo-1",
+                thread_id="thread-k3-echo-1",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession,
+            "ensure_started",
+            lambda self: "thread-k3-echo-1",
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {
+                    "source": "yatima-k3",
+                    "status": "ok",
+                    "context": marker + "\n- task=t123 attempt=t123:run:1",
+                }
+            ]
+            if hook_name == "pre_llm_call"
+            else [],
+        )
+
+        agent = _make_codex_agent()
+        agent._session_db = SessionDB(tmp_path / "state.db")
+        agent._session_db_created = False
+        agent.session_id = "session-k3-echo-persistence"
+        setattr(agent, "_pending_cli_user_message", {"role": "user", "content": "hello"})
+        try:
+            with patch.object(agent, "_spawn_background_review", return_value=None):
+                result = agent.run_conversation("hello")
+            stored = agent._session_db.get_messages(agent.session_id)
+        finally:
+            agent._session_db.close()
+
+        assert marker in captured["user_input"]
+        assert [
+            m.get("content")
+            for m in result["messages"]
+            if m.get("role") == "user"
+        ] == ["hello"]
+        assert all(
+            marker not in str(m.get("content") or "")
+            and marker not in str(m.get("api_content") or "")
+            for m in stored
+        )
+
+    def test_app_server_preserves_steered_user_messages_while_dropping_input_echo(
+        self, monkeypatch
+    ):
+        marker = "# Yatima K3 Task/Session Capsule"
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            return TurnResult(
+                final_text="done",
+                projected_messages=[
+                    {"role": "user", "content": user_input},
+                    {"role": "assistant", "content": "working"},
+                    {"role": "user", "content": "steer: use the bounded path"},
+                    {"role": "assistant", "content": "done"},
+                ],
+                turn_id="turn-steer-1",
+                thread_id="thread-steer-1",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession,
+            "ensure_started",
+            lambda self: "thread-steer-1",
+        )
+        agent = _make_codex_agent()
+        with patch(
+            "hermes_cli.plugins.invoke_hook",
+            return_value=[{"context": marker}],
+        ), patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("hello")
+
+        assert [
+            message.get("content")
+            for message in result["messages"]
+            if message.get("role") == "user"
+        ] == ["hello", "steer: use the bounded path"]
 
     def test_run_conversation_returns_codex_shape(self, fake_session):
         agent = _make_codex_agent()

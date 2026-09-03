@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import logging
 import os
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -381,6 +382,45 @@ def _strip_unmanaged_plugin_tables(toml_text: str) -> str:
     return "".join(out)
 
 
+def _strip_shadowed_mcp_server_tables(
+    toml_text: str,
+    server_names: set[str],
+) -> str:
+    """Remove unmanaged MCP tables that the managed block will regenerate.
+
+    Unrelated user-owned MCP tables and all non-MCP content remain unchanged.
+    Nested tables such as ``[mcp_servers.name.env]`` are removed with their
+    parent so the regenerated server has a single TOML definition.
+    """
+
+    if not server_names:
+        return toml_text
+
+    out: list[str] = []
+    in_shadowed_table = False
+    for line in toml_text.splitlines(keepends=True):
+        stripped = line.lstrip()
+        if stripped.startswith("["):
+            try:
+                parsed = tomllib.loads(f"{stripped}\n__hermes_probe__ = true\n")
+            except tomllib.TOMLDecodeError:
+                pass
+            else:
+                mcp_servers = parsed.get("mcp_servers")
+                parsed_server = (
+                    next(iter(mcp_servers))
+                    if isinstance(mcp_servers, dict) and mcp_servers
+                    else None
+                )
+                in_shadowed_table = parsed_server in server_names
+                if in_shadowed_table:
+                    continue
+        if in_shadowed_table:
+            continue
+        out.append(line)
+    return "".join(out)
+
+
 def _looks_like_table_header(stripped_line: str) -> bool:
     """Return True if ``stripped_line`` is a TOML table header.
 
@@ -713,6 +753,10 @@ def migrate(
             report.errors.append(f"could not read {target}: {exc}")
             return report
         without_managed = _strip_existing_managed_block(existing)
+        without_managed = _strip_shadowed_mcp_server_tables(
+            without_managed,
+            set(translated),
+        )
         # Bug B: when plugin/list ran authoritatively, codex's own
         # [plugins."<name>@<marketplace>"] tables outside our managed block
         # would survive _strip_existing_managed_block and then collide with
@@ -724,6 +768,12 @@ def migrate(
         new_text = _insert_managed_block_at_top_level(without_managed, managed_block)
     else:
         new_text = managed_block
+
+    try:
+        tomllib.loads(new_text)
+    except tomllib.TOMLDecodeError as exc:
+        report.errors.append(f"generated invalid Codex TOML: {exc}")
+        return report
 
     if dry_run:
         return report

@@ -839,13 +839,26 @@ def run_codex_app_server_turn(
             pass
         agent._codex_session = None
 
-    # Splice projected messages into the conversation. The projector emits
-    # standard {role, content, tool_calls, tool_call_id} entries, which
-    # is exactly what curator.py / sessions DB expect.
-    if turn.projected_messages:
+    # Splice Codex-projected assistant/tool messages into the conversation.
+    # Hermes already owns and persisted the clean inbound user turn. Codex also
+    # echoes that input as a userMessage, which can contain ephemeral plugin/K3
+    # context; re-appending it would duplicate the turn and leak the sidecar
+    # into durable history.
+    projected_messages = []
+    input_echo_removed = False
+    for message in turn.projected_messages or []:
+        if (
+            not input_echo_removed
+            and message.get("role") == "user"
+            and message.get("content") == user_message
+        ):
+            input_echo_removed = True
+            continue
+        projected_messages.append(message)
+    if projected_messages:
         from agent.message_metadata import append_message
 
-        for projected_message in turn.projected_messages:
+        for projected_message in projected_messages:
             append_message(messages, projected_message)
 
         # Persist the newly-projected assistant/tool messages ourselves.
