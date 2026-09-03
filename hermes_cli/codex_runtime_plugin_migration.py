@@ -636,6 +636,21 @@ def _build_hermes_tools_mcp_entry() -> dict:
     out: dict[str, Any] = {
         "command": sys.executable,
         "args": ["-m", "agent.transports.hermes_tools_mcp_server"],
+        # Codex starts stdio MCP servers with an explicit environment. Forward
+        # only the task/profile routing variables the Kanban lifecycle tools
+        # need; values remain process-scoped and are never written to TOML.
+        "env_vars": [
+            "HERMES_HOME",
+            "HERMES_PROFILE",
+            "HERMES_TENANT",
+            "HERMES_KANBAN_TASK",
+            "HERMES_KANBAN_RUN_ID",
+            "HERMES_KANBAN_CLAIM_LOCK",
+            "HERMES_KANBAN_DB",
+            "HERMES_KANBAN_BOARD",
+            "HERMES_KANBAN_WORKSPACE",
+            "HERMES_KANBAN_WORKSPACES_ROOT",
+        ],
     }
     if env:
         out["env"] = env
