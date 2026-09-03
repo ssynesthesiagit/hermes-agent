@@ -192,6 +192,91 @@ class YatimaWorkerIntegrityTests(unittest.TestCase):
             self.assertEqual(len(registry["issuers"]), 1)
             self.assertNotIn("private_key", json.dumps(registry))
 
+    def test_owner_runtime_binding_produces_loadable_k3_capsule(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            profile_home = root / "profile"
+            profile_home.mkdir()
+            env = {"HERMES_HOME": str(profile_home)}
+            prepare_worker_security(
+                task=self._task(),
+                profile="brain_omarchy",
+                env=env,
+                board="yatima-owner-dispatch",
+                settings={
+                    "worker_bundle_enabled": True,
+                    "core_path": str(K3_CORE),
+                    "integrity_core_path": str(INTEGRITY_CORE),
+                    "integrity_state_root": str(root / "integrity-state"),
+                },
+            )
+            k3_settings = json.loads(env["YATIMA_K3_WORKER_SETTINGS_JSON"])
+            capsule = json.loads(
+                Path(k3_settings["capsule_path"]).read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                capsule["runtime_identity"]["configured_route"],
+                "current-local-test",
+            )
+            self.assertEqual(
+                capsule["runtime_identity"]["actual_model"],
+                "current-local-test",
+            )
+            self.assertEqual(
+                capsule["runtime_identity"]["actual_harness"],
+                "current-local-test",
+            )
+            self.assertEqual(
+                capsule["runtime_identity"]["endpoint_identity"],
+                "http://127.0.0.1:11999/v1",
+            )
+            self.assertNotEqual(
+                capsule["runtime_identity"]["process_or_server_receipt"],
+                "unreported",
+            )
+
+            k3 = importlib.import_module("yatima_k3")
+            transport = importlib.import_module("yatima_k3.mcp")
+            adapter = transport.K3MCPAdapter(
+                transport.AdapterConfig(
+                    capsule_path=k3_settings["capsule_path"],
+                    receipt_path=k3_settings["receipt_path"],
+                    cache_path=k3_settings["cache_path"],
+                    expected_scope=k3.ScopeBindings(**k3_settings["scope"]),
+                    expected_runtime=k3.RuntimeIdentity(
+                        **capsule["runtime_identity"]
+                    ),
+                    now=k3_settings["now"],
+                )
+            )
+            loaded = adapter.call_memory_seed()
+            self.assertEqual(
+                loaded["task_session_capsule"]["capsule_hash"],
+                capsule["capsule_hash"],
+            )
+
+    def test_untrusted_creator_cannot_mint_verified_runtime_receipt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            profile_home = root / "profile"
+            profile_home.mkdir()
+            task = self._task()
+            task.created_by = "not-owner"
+            with self.assertRaisesRegex(Exception, "trusted owner-command-center"):
+                prepare_worker_security(
+                    task=task,
+                    profile="brain_omarchy",
+                    env={"HERMES_HOME": str(profile_home)},
+                    board="yatima-owner-dispatch",
+                    settings={
+                        "worker_bundle_enabled": True,
+                        "core_path": str(K3_CORE),
+                        "integrity_core_path": str(INTEGRITY_CORE),
+                        "integrity_state_root": str(root / "integrity-state"),
+                    },
+                )
+            self.assertFalse((profile_home / "k3").exists())
+
     def test_owner_runtime_binding_mismatch_fails_before_worker_artifacts(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

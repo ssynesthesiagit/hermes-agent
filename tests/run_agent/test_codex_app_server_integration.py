@@ -73,6 +73,38 @@ class TestApiModeAccepted:
 
 
 class TestRunConversationCodexPath:
+    def test_plugin_context_reaches_codex_app_server_without_dirtying_history(
+        self, monkeypatch
+    ):
+        captured = {}
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            captured["user_input"] = user_input
+            return TurnResult(
+                final_text="done",
+                projected_messages=[{"role": "assistant", "content": "done"}],
+                turn_id="turn-k3-1",
+                thread_id="thread-k3-1",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession,
+            "ensure_started",
+            lambda self: "thread-k3-1",
+        )
+        agent = _make_codex_agent()
+        with patch(
+            "hermes_cli.plugins.invoke_hook",
+            return_value=[{"context": "# Yatima K3 Task/Session Capsule"}],
+        ), patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("hello")
+
+        assert captured["user_input"] == (
+            "hello\n\n# Yatima K3 Task/Session Capsule"
+        )
+        assert result["messages"][0]["content"] == "hello"
+
     def test_run_conversation_returns_codex_shape(self, fake_session):
         agent = _make_codex_agent()
         # No background review fork during tests
