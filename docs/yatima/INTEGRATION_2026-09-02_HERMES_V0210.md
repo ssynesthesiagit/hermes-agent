@@ -79,6 +79,17 @@ manifests. It was regenerated with npm 11.17 and then accepted by a clean
 - Broad UI gate: `6,830 passed` across `688` test files.
 - Renderer, Electron and e2e TypeScript typecheck: passed.
 - Targeted ESLint for the ported modular Bot files: passed.
+- Linux unpacked production package: built and bundle-validated at integration
+  commit `bdf9a56493b6`.
+- Packaged Electron smoke: `6 passed`. The real packaged main process and
+  renderer booted the matching checkout backend with credential-stripped,
+  disposable `HERMES_HOME` and Electron user data; title, renderer content,
+  QueryClient boundary, HUD containment, boot completion, and compositor
+  screenshot checks all passed.
+- The smoke exposed a Linux test-fixture path mismatch (`hermes` versus the
+  configured `Hermes` executable) and a false isolation assumption in the
+  fixture. Both were corrected so the packaged gate can no longer skip or
+  silently dial an unavailable installed backend.
 
 The broad jsdom run emitted its expected warning that
 `HTMLCanvasElement.getContext()` is unavailable without the optional native
@@ -117,17 +128,17 @@ regression to v0.21.0.
 
 ## Remaining acceptance and rollout
 
-Before deployment, package and smoke-test one non-authoritative node first:
+The production package and disposable packaged-app smoke are complete. Before
+deployment to an authoritative node, live-smoke one non-authoritative node:
 
-1. Start the desktop and gateway without changing stored profiles.
-2. Confirm Nous sign-in/refresh and profile isolation.
-3. Open an existing canonical Bot Chat in the main window and a native pop-out.
-4. Exercise a same-machine two-turn A2A context and one disposable
+1. Confirm Nous sign-in/refresh and profile isolation.
+2. Open an existing canonical Bot Chat in the main window and a native pop-out.
+3. Exercise a same-machine two-turn A2A context and one disposable
    `@bot@machine` Tailnet exchange.
-5. Confirm Telegram reports connected only when polling is healthy.
-6. Run a long disposable conversation through compression and record cache-hit,
+4. Confirm Telegram reports connected only when polling is healthy.
+5. Run a long disposable conversation through compression and record cache-hit,
    input/output, cooldown, and rotation metrics without reading message text.
-7. Switch the Android client between both saved gateways and back.
+6. Switch the Android client between both saved gateways and back.
 
-Only after those checks should the integration branch be merged into the
-customization branch, packaged, installed, or pushed as the deployment source.
+Only after those checks should this source be installed on an authoritative
+node or pushed as the deployment source.

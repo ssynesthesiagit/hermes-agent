@@ -506,7 +506,7 @@ function resolvePackagedBinaryPath(): string {
     return path.join(RELEASE_ROOT, `mac-${arch}`, 'Hermes.app', 'Contents', 'MacOS', 'Hermes')
   }
 
-  return path.join(RELEASE_ROOT, 'linux-unpacked', 'hermes')
+  return path.join(RELEASE_ROOT, 'linux-unpacked', 'Hermes')
 }
 
 export const PACKAGED_BINARY_PATH = resolvePackagedBinaryPath()
@@ -524,8 +524,10 @@ export interface PackagedAppFixture {
 
 /**
  * Launch the *packaged* Electron binary (from `npm run pack` →
- * `electron-builder --dir`) with `BOOT_FAKE=1` so it simulates boot
- * progress without spawning a real Hermes backend.
+ * `electron-builder --dir`) while resolving the backend from this checkout.
+ * The renderer and Electron main process still come exclusively from the
+ * packaged app; the source override avoids a network install while exercising
+ * the matching backend revision against disposable state.
  *
  * Uses the same sandbox isolation (credential stripping, isolated
  * HERMES_HOME + userData, unique app name) as the dev-mode fixtures.
@@ -541,19 +543,14 @@ export async function setupPackagedApp(): Promise<PackagedAppFixture> {
 
   const sandbox = createSandbox('packaged')
 
-  // Build the sandbox env using the shared helpers, then add the
-  // packaged-binary-specific overrides.
-  const env = buildAppEnv(sandbox, {
-    // Fake boot: simulates progress steps without spawning the real backend.
-    HERMES_DESKTOP_BOOT_FAKE: '1',
-    HERMES_DESKTOP_BOOT_FAKE_STEP_MS: '120',
-  })
+  writeEmptyConfig(sandbox.hermesHome)
+  const env = buildAppEnv(sandbox)
 
-  // Clear dev-server + hermes-root overrides — the packaged binary
-  // should use its own bundled renderer, not the dev checkout.
+  // Clear only renderer/command overrides. HERMES_DESKTOP_HERMES_ROOT is
+  // intentionally retained so the thin package can boot the matching backend
+  // without downloading or touching an installed Hermes runtime.
   delete (env as Record<string, string | undefined>).HERMES_DESKTOP_DEV_SERVER
   delete (env as Record<string, string | undefined>).HERMES_DESKTOP_HERMES
-  delete (env as Record<string, string | undefined>).HERMES_DESKTOP_HERMES_ROOT
 
   const app = await _electron.launch({
     executablePath: PACKAGED_BINARY_PATH,
