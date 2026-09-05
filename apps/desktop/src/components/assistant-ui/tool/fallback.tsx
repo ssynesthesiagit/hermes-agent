@@ -950,11 +950,12 @@ const ToolRun: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> =
   // Two things a one-line window can't hold. An approval is a question the
   // user has to answer, and expanded output is one they went looking for —
   // both would tick straight past, or be sliced to a single line, as the run
-  // keeps going. Either one hands the run back its full height until the run
-  // settles and the row can be reached through the summary instead.
+  // keeps going. Preserve an opened row when later content settles the run:
+  // completing work must not hide output the user is reading. An explicit
+  // summary toggle still wins, so the user can fold the group themselves.
   const blocked = Boolean(approval) && pendingApprovalTool
   const unfurled = blocked || rowOpen
-  const expanded = live ? unfurled : (persistedOpen ?? false)
+  const expanded = live ? unfurled : (persistedOpen ?? rowOpen)
 
   return (
     <div

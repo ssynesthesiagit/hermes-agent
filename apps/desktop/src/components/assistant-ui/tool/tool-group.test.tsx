@@ -521,6 +521,36 @@ describe('live tool run', () => {
     // ...and the row it opened is still on screen to be read.
     expect(container.querySelector('[data-tool-row][data-tool-open]')).not.toBeNull()
   })
+
+  it.each(['next step', 'turn completion'])('keeps opened output visible after %s', async transition => {
+    const message = betweenSequentialCallsMessage()
+    const { container, rerender } = render(<GroupHarness message={message} />)
+
+    await screen.findByText('Running 2 commands')
+    const row = container.querySelector('[data-tool-ticker] [data-tool-row] button[aria-expanded="false"]')
+    expect(row).not.toBeNull()
+    fireEvent.click(row as Element)
+    await waitFor(() => expect(container.querySelector('[data-tool-row][data-tool-open]')).not.toBeNull())
+
+    const next = {
+      ...message,
+      ...(transition === 'next step'
+        ? { content: [...message.content, { type: 'text', text: 'Next step.' }] }
+        : { status: { type: 'complete', reason: 'stop' } })
+    } as ThreadMessage
+    rerender(<GroupHarness message={next} />)
+
+    await screen.findByText('Ran 2 commands')
+    expect(container.querySelector('[data-tool-row][data-tool-open]')).not.toBeNull()
+    const summary = container.querySelector('[data-tool-summary] button[aria-expanded="true"]')
+    expect(summary).not.toBeNull()
+
+    // Preserving the reader's choice must not make the summary uncollapsible.
+    fireEvent.click(summary as Element)
+    await waitFor(() => expect(container.querySelector('[data-tool-row]')).toBeNull())
+    fireEvent.click(container.querySelector('[data-tool-summary] button[aria-expanded="false"]') as Element)
+    await waitFor(() => expect(container.querySelector('[data-tool-row][data-tool-open]')).not.toBeNull())
+  })
 })
 
 // A run whose calls never resolved used to read as live forever, which stranded
