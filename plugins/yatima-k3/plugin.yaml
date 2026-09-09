@@ -1,6 +1,6 @@
 name: yatima-k3
-version: 1.0.0
-description: "Opt-in, read-only Yatima K3 task/session capsule context for pre_llm_call."
+version: 1.1.0
+description: "Opt-in K3 context with a default-off Crystal shadow observer."
 author: Yatima
 kind: standalone
 provides_hooks:

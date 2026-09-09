@@ -49,6 +49,63 @@ remove the hook, and remove only the disposable precompiled artifact/cache
 files when their owner no longer needs them. No normal Codex config or live
 Hermes profile is modified by this plugin package.
 
+## Crystal passive shadow v1 (separate opt-in)
+
+The K3 hook can call the source-locked Crystal matcher only after the existing
+capsule transport, scope, currentness, compiler and rendering checks succeed.
+The default is off: omit `shadow` or set only `shadow: {mode: off}`. In that
+state Hermes does not import the observer, read a catalog, open or create a
+sink, or add work to the callback.
+
+There is no `inject` mode. Unknown modes, extra keys, weak types and incomplete
+shadow settings are rejected to an inert `CONFIG_REJECTED` state while the
+accepted K3 hook continues unchanged. A shadow setup/runtime/sink failure is
+also non-model-visible and cannot replace or alter K3's normal hook result.
+
+A future separately reviewed shadow-only activation must supply every field:
+
+```yaml
+shadow:
+  mode: shadow
+  core_path: /absolute/source-locked/Yatima/shared/crystals/k3_shadow_v1/python
+  core_digest: exact-64-character-package-source-digest
+  catalog_path: /absolute/private-diagnostic/catalog.json
+  catalog_root: /absolute/private-diagnostic
+  sink_path: /absolute/private-diagnostic/observations.jsonl
+  sink_root: /absolute/private-diagnostic
+  observed_at: "2026-09-08T13:00:00Z"
+  policy:
+    mode: shadow
+    generation: approved-shadow-policy-generation
+    catalog_generation: approved-shadow-catalog-generation
+    expires_at: "owner-approved-expiry-with-timezone"
+    allowed_task_families: [owner_preflight]
+    max_candidates: 32
+    max_content_bytes: 8192
+  task_family: owner_preflight
+  trusted_facts:
+    work_kind: implementation
+    repository_state: isolated-worktree
+    evidence_state: open
+  max_sink_events: 256
+  max_sink_bytes: 1048576
+```
+
+`task_family` and `trusted_facts` are host configuration, not model text. The
+observer never examines `user_message` or `conversation_history`, never calls
+`memory_seed` again, and never returns its decision to the hook. Its bounded
+receipt carries only safe bindings, candidate ID/version and tested reason
+codes; candidate procedure text is excluded. Disable by returning to
+`mode: off`; disabling does not delete evidence. Installation and activation
+remain a separate owner gate and were not performed with this source change.
+
+This v1 implementation was integrated and tested against Yatima source commit
+`83a2dc892d44c176c64cb0951ddcaa85064fac03` (parent
+`83affdcbd7f4f961e31be8bb046d7746dd4a9660`). The observer package digest for
+that commit is
+`f46ac96fbb898318a775ae5a6b52f2bb548a8bc855c42543381fd4b3661308df`.
+Those values identify source only; they do not activate or approve a catalog.
+
 ## Runtime Integrity V1.1 (opt-in)
 
 The same package can register the portable Runtime Integrity adapter when the
