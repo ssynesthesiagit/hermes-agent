@@ -18,6 +18,7 @@ import json
 import os
 from pathlib import Path
 import sys
+from datetime import datetime, timezone
 from typing import Any, Mapping
 
 
@@ -52,12 +53,31 @@ _SHADOW_KEYS = frozenset(
         "catalog_root",
         "sink_path",
         "sink_root",
-        "observed_at",
         "policy",
         "task_family",
         "trusted_facts",
+        "fact_snapshot_generation",
+        "fact_snapshot_valid_from",
+        "fact_snapshot_expires_at",
+        "fact_snapshot_binding",
         "max_sink_events",
         "max_sink_bytes",
+    }
+)
+_FACT_SNAPSHOT_BINDING_KEYS = frozenset(
+    {
+        "project_scope",
+        "role_scope",
+        "profile_or_agent",
+        "host_id",
+        "session_id",
+        "task_id",
+        "attempt_id",
+        "task_fingerprint",
+        "source_generation",
+        "privacy_class",
+        "k3_digest",
+        "capsule_generation",
     }
 )
 
@@ -70,10 +90,13 @@ class ShadowSettings:
     catalog_root: str
     sink_path: str
     sink_root: str
-    observed_at: str
     policy: Mapping[str, Any]
     task_family: str
     trusted_facts: Mapping[str, Any]
+    fact_snapshot_generation: str
+    fact_snapshot_valid_from: str
+    fact_snapshot_expires_at: str
+    fact_snapshot_binding: Mapping[str, Any]
     max_sink_events: int
     max_sink_bytes: int
 
@@ -97,13 +120,36 @@ class ShadowSettings:
             "catalog_root",
             "sink_path",
             "sink_root",
-            "observed_at",
             "task_family",
+            "fact_snapshot_generation",
+            "fact_snapshot_valid_from",
+            "fact_snapshot_expires_at",
         )
         if any(not isinstance(value.get(key), str) or not value[key].strip() for key in paths):
             return None, "CONFIG_REJECTED"
         if not isinstance(value.get("policy"), Mapping) or not isinstance(
             value.get("trusted_facts"), Mapping
+        ) or not isinstance(value.get("fact_snapshot_binding"), Mapping):
+            return None, "CONFIG_REJECTED"
+        binding = value["fact_snapshot_binding"]
+        if frozenset(binding) != _FACT_SNAPSHOT_BINDING_KEYS or any(
+            not isinstance(binding.get(key), str) or not binding[key].strip()
+            for key in _FACT_SNAPSHOT_BINDING_KEYS
+        ):
+            return None, "CONFIG_REJECTED"
+        try:
+            valid_from = datetime.fromisoformat(
+                value["fact_snapshot_valid_from"].replace("Z", "+00:00")
+            )
+            expires_at = datetime.fromisoformat(
+                value["fact_snapshot_expires_at"].replace("Z", "+00:00")
+            )
+        except ValueError:
+            return None, "CONFIG_REJECTED"
+        if (
+            valid_from.tzinfo is None
+            or expires_at.tzinfo is None
+            or valid_from >= expires_at
         ):
             return None, "CONFIG_REJECTED"
         max_events = value.get("max_sink_events")
@@ -118,10 +164,13 @@ class ShadowSettings:
                 catalog_root=value["catalog_root"],
                 sink_path=value["sink_path"],
                 sink_root=value["sink_root"],
-                observed_at=value["observed_at"],
                 policy=dict(value["policy"]),
                 task_family=value["task_family"],
                 trusted_facts=dict(value["trusted_facts"]),
+                fact_snapshot_generation=value["fact_snapshot_generation"],
+                fact_snapshot_valid_from=value["fact_snapshot_valid_from"],
+                fact_snapshot_expires_at=value["fact_snapshot_expires_at"],
+                fact_snapshot_binding=dict(value["fact_snapshot_binding"]),
                 max_sink_events=max_events,
                 max_sink_bytes=max_bytes,
             ),
@@ -309,6 +358,19 @@ class K3HookRuntime:
     shadow_observer: Any | None = None
     shadow_health: str = "OFF"
 
+    def drain_shadow_diagnostics(self, *, max_events: int | None = None) -> tuple[Any, ...]:
+        """Caller-owned persistence step; never invoked by ``on_pre_llm_call``."""
+
+        if self.shadow_observer is None:
+            return ()
+        drain = getattr(self.shadow_observer.sink, "drain", None)
+        if drain is None:
+            return ()
+        results = drain(max_events=max_events)
+        if results:
+            self.shadow_health = results[-1].state
+        return results
+
     def on_pre_llm_call(self, **kwargs: Any) -> dict[str, str] | None:
         """Return only ephemeral user-message context for an exact turn."""
 
@@ -377,7 +439,11 @@ class K3HookRuntime:
             return None
 
 
-def _build_shadow_observer(settings: ShadowSettings) -> Any:
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _build_shadow_observer(settings: ShadowSettings, k3_scope: Mapping[str, Any]) -> Any:
     shadow_core = _load_shadow_core(settings.core_path, settings.core_digest)
     policy = shadow_core.ShadowPolicy.from_mapping(settings.policy)
     if policy.mode != "shadow":
@@ -387,9 +453,17 @@ def _build_shadow_observer(settings: ShadowSettings) -> Any:
         settings.catalog_root,
         policy,
     )
-    sink = shadow_core.FileDiagnosticSink(
+    for key in _FACT_SNAPSHOT_BINDING_KEYS - {"k3_digest", "capsule_generation"}:
+        if settings.fact_snapshot_binding.get(key) != k3_scope.get(key):
+            raise ValueError(f"fact snapshot does not bind K3 scope field {key}")
+    backend = shadow_core.FileDiagnosticSink(
         settings.sink_path,
         settings.sink_root,
+        max_events=settings.max_sink_events,
+        max_bytes=settings.max_sink_bytes,
+    )
+    sink = shadow_core.BufferedDiagnosticSink(
+        backend,
         max_events=settings.max_sink_events,
         max_bytes=settings.max_sink_bytes,
     )
@@ -397,9 +471,13 @@ def _build_shadow_observer(settings: ShadowSettings) -> Any:
         policy=policy,
         catalog=catalog,
         sink=sink,
-        observed_at=settings.observed_at,
         task_family=settings.task_family,
         facts=settings.trusted_facts,
+        fact_snapshot_generation=settings.fact_snapshot_generation,
+        fact_snapshot_valid_from=settings.fact_snapshot_valid_from,
+        fact_snapshot_expires_at=settings.fact_snapshot_expires_at,
+        expected_binding=settings.fact_snapshot_binding,
+        clock=_utc_now,
     )
 
 
@@ -428,7 +506,7 @@ def build_runtime(settings: PluginSettings) -> K3HookRuntime:
     )
     if settings.shadow is not None:
         try:
-            runtime.shadow_observer = _build_shadow_observer(settings.shadow)
+            runtime.shadow_observer = _build_shadow_observer(settings.shadow, settings.scope)
             runtime.shadow_health = "READY"
         except Exception:
             # Shadow setup cannot disable the accepted K3 hook or leak an

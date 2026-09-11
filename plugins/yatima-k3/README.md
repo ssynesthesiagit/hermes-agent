@@ -73,7 +73,6 @@ shadow:
   catalog_root: /absolute/private-diagnostic
   sink_path: /absolute/private-diagnostic/observations.jsonl
   sink_root: /absolute/private-diagnostic
-  observed_at: "2026-09-08T13:00:00Z"
   policy:
     mode: shadow
     generation: approved-shadow-policy-generation
@@ -87,24 +86,44 @@ shadow:
     work_kind: implementation
     repository_state: isolated-worktree
     evidence_state: open
+  fact_snapshot_generation: approved-fact-snapshot-generation
+  fact_snapshot_valid_from: "owner-approved-start-with-timezone"
+  fact_snapshot_expires_at: "owner-approved-expiry-with-timezone"
+  fact_snapshot_binding:
+    project_scope: synthetic-project
+    role_scope: owner-coder
+    profile_or_agent: yatima
+    host_id: synthetic-host
+    session_id: session-001
+    task_id: task-001
+    attempt_id: attempt-001
+    task_fingerprint: task-fingerprint-001
+    source_generation: source-generation-001
+    privacy_class: synthetic-public
+    k3_digest: exact-validated-capsule-hash
+    capsule_generation: exact-validated-capsule-id
   max_sink_events: 256
   max_sink_bytes: 1048576
 ```
 
-`task_family` and `trusted_facts` are host configuration, not model text. The
-observer never examines `user_message` or `conversation_history`, never calls
-`memory_seed` again, and never returns its decision to the hook. Its bounded
-receipt carries only safe bindings, candidate ID/version and tested reason
-codes; candidate procedure text is excluded. Disable by returning to
+`task_family` and `trusted_facts` are an immutable, validity-bounded host fact
+snapshot bound to the exact K3 task, attempt and capsule. The observer uses the
+current host clock on every callback; there is no live-facing fixed
+`observed_at` setting. A policy, catalog, admission or fact change requires a
+new generation and observer rebuild. The observer never examines
+`user_message` or `conversation_history`, never calls `memory_seed` again, and
+never returns its decision to the hook. Its request-path sink only makes a
+bounded non-blocking in-memory handoff. A caller may explicitly invoke
+`runtime.drain_shadow_diagnostics()` outside the request path to persist and
+deduplicate JSONL receipts. Buffered, persisted, duplicate, dropped,
+contended, saturated and degraded outcomes remain distinct. Candidate
+procedure text is excluded. Disable by returning to
 `mode: off`; disabling does not delete evidence. Installation and activation
 remain a separate owner gate and were not performed with this source change.
 
-This v1 implementation was integrated and tested against Yatima source commit
-`83a2dc892d44c176c64cb0951ddcaa85064fac03` (parent
-`83affdcbd7f4f961e31be8bb046d7746dd4a9660`). The observer package digest for
-that commit is
-`f46ac96fbb898318a775ae5a6b52f2bb548a8bc855c42543381fd4b3661308df`.
-Those values identify source only; they do not activate or approve a catalog.
+The exact R1 source and package digest are pinned in the companion Yatima
+publication evidence. Those values identify source only; they do not activate
+or approve a catalog.
 
 ## Runtime Integrity V1.1 (opt-in)
 

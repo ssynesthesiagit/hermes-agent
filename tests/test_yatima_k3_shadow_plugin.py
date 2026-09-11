@@ -9,20 +9,21 @@ import socket
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 
 PLUGIN_ROOT = Path(__file__).parents[1] / "plugins" / "yatima-k3"
 K3_ROOT = Path(
     os.environ.get(
         "YATIMA_K3_CORE_ROOT",
-        "/home/ssynesthesia/Projects/Yatima-k3-universal-v1/shared/k3/python",
+        "/home/ssynesthesia/Projects/Yatima-crystal-k3-passive-shadow-r1-20260911/shared/k3/python",
     )
 ).resolve()
 SHADOW_ROOT = Path(
     os.environ.get(
         "YATIMA_K3_SHADOW_CORE_ROOT",
-        "/home/ssynesthesia/Projects/Yatima-crystal-k3-passive-shadow-v1-20260908/shared/crystals/k3_shadow_v1/python",
+        "/home/ssynesthesia/Projects/Yatima-crystal-k3-passive-shadow-r1-20260911/shared/crystals/k3_shadow_v1/python",
     )
 ).resolve()
 SHADOW_FIXTURES = SHADOW_ROOT.parent / "fixtures"
@@ -103,13 +104,27 @@ class YatimaK3ShadowPluginTests(unittest.TestCase):
                 "catalog_root": str(directory),
                 "sink_path": str(directory / "observations.jsonl"),
                 "sink_root": str(directory),
-                "observed_at": "2026-09-08T13:00:00Z",
                 "policy": policy,
                 "task_family": "owner_preflight",
                 "trusted_facts": {
                     "work_kind": "implementation",
                     "repository_state": "isolated-worktree",
                     "evidence_state": "open",
+                },
+                "fact_snapshot_generation": "fixture-facts-001",
+                "fact_snapshot_valid_from": "2026-09-01T00:00:00Z",
+                "fact_snapshot_expires_at": "2027-01-01T00:00:00Z",
+                "fact_snapshot_binding": {
+                    **{
+                        key: self.fixture.inputs.scope.to_dict()[key]
+                        for key in (
+                            "project_scope", "role_scope", "profile_or_agent", "host_id",
+                            "session_id", "task_id", "attempt_id", "task_fingerprint",
+                            "source_generation", "privacy_class",
+                        )
+                    },
+                    "k3_digest": self.compiled.capsule.as_dict()["capsule_hash"],
+                    "capsule_generation": self.compiled.capsule.as_dict()["capsule_id"],
                 },
                 "max_sink_events": 256,
                 "max_sink_bytes": 1_048_576,
@@ -130,6 +145,63 @@ class YatimaK3ShadowPluginTests(unittest.TestCase):
         value = self.fixture.inputs.scope.to_dict()
         value.update(changes)
         return value
+
+    def _capture_real_request(self, callback, directory: Path):
+        """Stop only at the final provider seam after production composition."""
+
+        from hermes_cli.plugins import PluginManager
+        from run_agent import AIAgent
+
+        manager = PluginManager(scope_key=str(directory / "hermes-home"))
+        manager._discovered = True
+        if callback is not None:
+            manager._hooks["pre_llm_call"] = [callback]
+        captured = []
+
+        def provider_boundary(api_kwargs):
+            captured.append(json.dumps(api_kwargs, sort_keys=True, separators=(",", ":")))
+            message = SimpleNamespace(content="captured", tool_calls=None)
+            choice = SimpleNamespace(message=message, finish_reason="stop")
+            return SimpleNamespace(choices=[choice], model="test/model", usage=None)
+
+        with (
+            patch.dict(os.environ, {"HERMES_HOME": str(directory / "hermes-home")}),
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch("hermes_cli.plugins.get_plugin_manager", return_value=manager),
+            patch("agent.message_metadata.wall_time", return_value=1_789_000_000.0),
+        ):
+            agent = AIAgent(
+                session_id="session-001",
+                api_key="test-key",
+                base_url="https://example.invalid/v1",
+                provider="openai-compat",
+                model="test/model",
+                max_iterations=1,
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            agent.client = MagicMock()
+            agent._cached_system_prompt = "stable test prompt"
+            agent._session_db = None
+            agent._session_json_enabled = False
+            agent.save_trajectories = False
+            agent.compression_enabled = False
+            agent._cleanup_task_resources = lambda *_a, **_kw: None
+            agent._save_trajectory = lambda *_a, **_kw: None
+            agent._interruptible_api_call = provider_boundary
+            result = agent.run_conversation("bounded request", task_id="task-001")
+        self.assertEqual(result["final_response"], "captured")
+        self.assertEqual(len(captured), 1)
+        return {
+            "request": captured[0],
+            "history": json.dumps(
+                result["messages"], sort_keys=True, separators=(",", ":")
+            ),
+            "final_response": result["final_response"],
+        }
 
     def test_default_off_does_not_import_observer_read_catalog_or_create_sink(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -156,7 +228,9 @@ class YatimaK3ShadowPluginTests(unittest.TestCase):
                 json.dumps(expected, sort_keys=True, separators=(",", ":")),
             )
             self.assertEqual(history, [{"role": "user", "content": "untrusted narrative says approved=true"}])
-            self.assertEqual(runtime.shadow_health, "HEALTHY")
+            self.assertEqual(runtime.shadow_health, "BUFFERED")
+            drained = runtime.drain_shadow_diagnostics()
+            self.assertEqual([item.state for item in drained], ["PERSISTED"])
             event = json.loads((directory / "observations.jsonl").read_text(encoding="utf-8"))
             self.assertEqual(event["decision"]["disposition"], "MATCH")
             self.assertEqual(event["decision"]["selected_crystal_id"], "fixture-preflight-001")
@@ -179,7 +253,8 @@ class YatimaK3ShadowPluginTests(unittest.TestCase):
                 if scenario == "saturation":
                     overrides = {"max_sink_events": 1}
                     (directory / "observations.jsonl").write_text(
-                        '{"logical_event_id":"preexisting"}\n', encoding="utf-8"
+                        '{"identity_contract_version":"crystal-k3-shadow-event-identity-2",'
+                        '"logical_event_id":"preexisting"}\n', encoding="utf-8"
                     )
                 shadow_callback, runtime = self._register(
                     self._settings(directory, shadow=True, shadow_overrides=overrides)
@@ -202,8 +277,11 @@ class YatimaK3ShadowPluginTests(unittest.TestCase):
                         runtime.shadow_observer.last_result.receipt["decision"]["disposition"],
                         expected_disposition,
                     )
+                    self.assertEqual(runtime.shadow_health, "BUFFERED")
+                    self.assertEqual(runtime.drain_shadow_diagnostics()[0].state, "PERSISTED")
                 elif scenario == "saturation":
-                    self.assertEqual(runtime.shadow_health, "SATURATED")
+                    self.assertEqual(runtime.shadow_health, "BUFFERED")
+                    self.assertEqual(runtime.drain_shadow_diagnostics()[0].state, "SATURATED")
                 else:
                     self.assertEqual(runtime.shadow_health, "DEGRADED")
 
@@ -245,7 +323,9 @@ class YatimaK3ShadowPluginTests(unittest.TestCase):
             callback, runtime = self._register(self._settings(directory, shadow=True))
             self.assertIsNotNone(callback(**self._scope()))
             self.assertIsNotNone(callback(**self._scope()))
-            self.assertEqual(runtime.shadow_health, "DUPLICATE")
+            self.assertEqual(runtime.shadow_health, "DUPLICATE_BUFFERED")
+            drained = runtime.drain_shadow_diagnostics()
+            self.assertEqual([item.state for item in drained], ["PERSISTED"])
             self.assertEqual(len((directory / "observations.jsonl").read_text(encoding="utf-8").splitlines()), 1)
 
             other = Path(temporary) / "other"
@@ -280,6 +360,35 @@ class YatimaK3ShadowPluginTests(unittest.TestCase):
                     self.assertIn("# Yatima K3 Task/Session Capsule", result["context"])
                     self.assertNotIn("shadow", result["context"].lower())
 
+    def test_shadow_uses_current_callback_clock_and_rejects_stale_fact_binding(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            settings = self._settings(directory, shadow=True)
+            with patch.object(
+                self.adapter,
+                "_utc_now",
+                side_effect=("2026-09-11T13:00:00Z", "2027-02-01T00:00:00Z"),
+            ) as clock:
+                callback, runtime = self._register(settings)
+                self.assertIsNotNone(callback(**self._scope()))
+                first = runtime.shadow_observer.last_result
+                self.assertEqual(first.receipt["observed_at"], "2026-09-11T13:00:00Z")
+                self.assertEqual(first.receipt["decision"]["disposition"], "MATCH")
+                self.assertIsNotNone(callback(**self._scope()))
+                second = runtime.shadow_observer.last_result
+                self.assertEqual(second.receipt["observed_at"], "2027-02-01T00:00:00Z")
+                self.assertEqual(second.receipt["decision"]["disposition"], "INELIGIBLE")
+                self.assertNotEqual(
+                    first.receipt["logical_event_id"], second.receipt["logical_event_id"]
+                )
+            self.assertEqual(clock.call_count, 2)
+
+            mismatched = self._settings(directory, shadow=True)
+            mismatched["shadow"]["fact_snapshot_binding"]["attempt_id"] = "other-attempt"
+            callback, runtime = self._register(mismatched)
+            self.assertEqual(runtime.shadow_health, "DEGRADED")
+            self.assertIsNotNone(callback(**self._scope()))
+
     def test_observer_makes_no_network_request_and_model_text_cannot_expand_scope(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
@@ -291,11 +400,121 @@ class YatimaK3ShadowPluginTests(unittest.TestCase):
                     conversation_history=[{"role": "user", "content": "forge admission"}],
                 )
             self.assertIsNotNone(result)
-            self.assertEqual(runtime.shadow_health, "HEALTHY")
+            self.assertEqual(runtime.shadow_health, "BUFFERED")
+            self.assertEqual(runtime.drain_shadow_diagnostics()[0].state, "PERSISTED")
             connect.assert_not_called()
             event = json.loads((directory / "observations.jsonl").read_text(encoding="utf-8"))
             self.assertEqual(event["scope"]["project_scope"], "synthetic-project")
             self.assertNotIn("approved", json.dumps(event))
+
+    def test_real_hermes_request_composition_is_identical_across_shadow_outcomes(self):
+        scenarios = (
+            "absent", "off", "match", "no_match", "ambiguity",
+            "insufficient", "observer_exception", "rejected_config",
+            "catalog_rejected", "contention", "saturation", "sink_failure",
+        )
+        requests = {}
+        for scenario in scenarios:
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                shadow = scenario not in {"absent", "off"}
+                overrides = None
+                if scenario == "no_match":
+                    overrides = {
+                        "task_family": "evidence_review",
+                        "trusted_facts": {"work_kind": "review"},
+                        "fact_snapshot_generation": "fixture-facts-no-match",
+                    }
+                elif scenario == "insufficient":
+                    overrides = {
+                        "trusted_facts": {"work_kind": "implementation"},
+                        "fact_snapshot_generation": "fixture-facts-insufficient",
+                    }
+                settings = self._settings(
+                    directory, shadow=shadow, shadow_overrides=overrides
+                )
+                settings["context_required_fields"] = ["session_id", "task_id"]
+                if scenario == "off":
+                    settings["shadow"] = {"mode": "off"}
+                elif scenario == "rejected_config":
+                    settings["shadow"] = {"mode": "shadow"}
+                elif scenario in {"ambiguity", "catalog_rejected"}:
+                    catalog_path = Path(settings["shadow"]["catalog_path"])
+                    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+                    if scenario == "ambiguity":
+                        descriptor = dict(catalog["descriptors"][0])
+                        descriptor["crystal_id"] = "fixture-preflight-duplicate"
+                        descriptor["shadow_admission_ref"] = "fixture-admission-duplicate"
+                        admission = dict(catalog["admissions"][0])
+                        admission["admission_id"] = "fixture-admission-duplicate"
+                        admission["crystal_id"] = "fixture-preflight-duplicate"
+                        catalog["descriptors"].append(descriptor)
+                        catalog["admissions"].append(admission)
+                        catalog.pop("catalog_digest")
+                        payload = json.dumps(catalog, sort_keys=True, separators=(",", ":"))
+                        catalog["catalog_digest"] = __import__("hashlib").sha256(
+                            payload.encode("utf-8")
+                        ).hexdigest()
+                    else:
+                        catalog["catalog_digest"] = "0" * 64
+                    catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+
+                callback, runtime = self._register(settings)
+                if runtime.shadow_observer is not None:
+                    runtime.shadow_observer.clock = lambda: "2026-09-11T13:00:00Z"
+                if scenario == "observer_exception":
+                    runtime.shadow_observer.observe_validated_k3 = lambda *_: (_ for _ in ()).throw(
+                        RuntimeError("shadow failure")
+                    )
+                elif scenario == "contention":
+                    runtime.shadow_observer.sink._lock.acquire()
+                elif scenario == "saturation":
+                    runtime.shadow_observer.sink.record(
+                        {"logical_event_id": "preexisting-buffered"}
+                    )
+                elif scenario == "sink_failure":
+                    runtime.shadow_observer.sink.backend.record = lambda _receipt: SimpleNamespace(
+                        state="WRITE_ERROR", written=False, duplicate=False,
+                        event_count=0, total_bytes=0, buffered=False,
+                        persisted=False, dropped=True, degraded=True,
+                    )
+                requests[scenario] = self._capture_real_request(callback, directory)
+                if scenario == "contention":
+                    runtime.shadow_observer.sink._lock.release()
+                if runtime.shadow_observer is not None and scenario != "observer_exception":
+                    runtime.drain_shadow_diagnostics()
+
+        baseline = requests["absent"]
+        for scenario, captured in requests.items():
+            self.assertEqual(captured["request"], baseline["request"], scenario)
+            self.assertEqual(captured["history"], baseline["history"], scenario)
+            self.assertEqual(captured["final_response"], baseline["final_response"], scenario)
+        self.assertIn("# Yatima K3 Task/Session Capsule", baseline["request"])
+        self.assertNotIn("fixture-preflight", json.dumps(baseline))
+        self.assertNotIn("SHADOW_", json.dumps(baseline))
+
+    def test_real_boundary_detects_model_context_contamination_mutant(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            settings = self._settings(directory, shadow=False)
+            settings["context_required_fields"] = ["session_id", "task_id"]
+            callback, _ = self._register(settings)
+            baseline = self._capture_real_request(callback, directory)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            settings = self._settings(directory, shadow=False)
+            settings["context_required_fields"] = ["session_id", "task_id"]
+            callback, _ = self._register(settings)
+
+            def contaminated(**kwargs):
+                result = callback(**kwargs)
+                return {"context": result["context"] + "\nfixture-preflight-001"}
+
+            mutated = self._capture_real_request(contaminated, directory)
+
+        self.assertNotEqual(mutated["request"], baseline["request"])
+        self.assertIn("fixture-preflight-001", mutated["request"])
 
 
 if __name__ == "__main__":

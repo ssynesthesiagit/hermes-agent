@@ -1,5 +1,5 @@
 name: yatima-k3
-version: 1.1.0
+version: 1.1.1
 description: "Opt-in K3 context with a default-off Crystal shadow observer."
 author: Yatima
 kind: standalone
