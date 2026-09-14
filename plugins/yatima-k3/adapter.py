@@ -9,11 +9,14 @@ API-bound user message.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import hashlib
 import importlib
 import json
 import os
 from pathlib import Path
+import stat
+import subprocess
 import sys
 from typing import Any, Mapping
 
@@ -40,6 +43,49 @@ _REQUIRED_SCOPE_FIELDS = (
 _BOOLEAN_SCOPE_FIELDS = frozenset(
     {"task_current", "attempt_current", "cancelled", "superseded"}
 )
+_MAX_PROJECT_STATE_BYTES = 256 * 1024
+_MAX_COMPILER_OUTPUT_BYTES = 512 * 1024
+
+
+def _read_project_state(path: Path) -> tuple[str, dict[str, str | int]]:
+    """Read one coherent regular-file snapshot without following a leaf symlink."""
+
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or before.st_size > _MAX_PROJECT_STATE_BYTES:
+            raise ValueError("invalid project state file")
+        with os.fdopen(os.dup(descriptor), "r", encoding="utf-8") as handle:
+            raw = handle.read(_MAX_PROJECT_STATE_BYTES + 1)
+        after = os.fstat(descriptor)
+        identity = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+        if identity != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+            raise ValueError("project state changed during read")
+        if len(raw.encode("utf-8")) > _MAX_PROJECT_STATE_BYTES:
+            raise ValueError("project state exceeded its bound")
+        return raw, {
+            "device": str(after.st_dev),
+            "inode": str(after.st_ino),
+            "size": after.st_size,
+            "mtimeNs": str(after.st_mtime_ns),
+        }
+    finally:
+        os.close(descriptor)
+
+
+def _history_retains_marker(history: Any, marker: str) -> bool:
+    """Check only host-owned API sidecars, never user-controlled clean text."""
+
+    if not isinstance(history, list):
+        return False
+    for message in history:
+        if not isinstance(message, Mapping):
+            continue
+        sidecar = message.get("api_content")
+        if isinstance(sidecar, str) and f"<!-- {marker} -->" in sidecar:
+            return True
+    return False
 
 
 @dataclass(frozen=True)
@@ -49,6 +95,7 @@ class PluginSettings:
     capsule_path: str
     receipt_path: str
     cache_path: str | None
+    worker_input_path: str | None
     now: str
     scope: Mapping[str, Any]
     runtime_identity: Mapping[str, Any] | None = None
@@ -113,6 +160,7 @@ class PluginSettings:
                 capsule_path=capsule_path,
                 receipt_path=receipt_path,
                 cache_path=setting("cache_path"),
+                worker_input_path=setting("worker_input_path"),
                 now=now,
                 scope=dict(scope),
                 runtime_identity=dict(runtime) if runtime is not None else None,
@@ -124,6 +172,54 @@ class PluginSettings:
         except Exception:
             # Plugin discovery must not make Hermes startup fail.  The absence
             # of a valid explicit opt-in is a safe no-op.
+            return None
+
+
+@dataclass(frozen=True)
+class InteractiveSettings:
+    core_path: str
+    project_state_path: str
+    compiler_script: str
+    python_executable: str
+    project_scope: str
+    profile_or_agent: str
+    host_id: str
+    role_scope: str
+    source_repository: str
+    source_commit: str
+    timeout_seconds: float = 10.0
+
+    @classmethod
+    def from_context(cls, ctx: Any) -> "InteractiveSettings | None":
+        try:
+            if ctx.get_config("interactive_continuity_enabled", False) is not True:
+                return None
+            values = {
+                "core_path": ctx.get_config("core_path"),
+                "project_state_path": ctx.get_config("project_state_path"),
+                "compiler_script": ctx.get_config("compiler_script"),
+                "python_executable": ctx.get_config("python_executable"),
+                "project_scope": ctx.get_config("project_scope"),
+                "profile_or_agent": ctx.get_config("profile_or_agent"),
+                "host_id": ctx.get_config("host_id"),
+                "role_scope": ctx.get_config("role_scope", "direct-hermes"),
+                "source_repository": ctx.get_config("source_repository"),
+                "source_commit": ctx.get_config("source_commit"),
+            }
+            if not all(isinstance(value, str) and value.strip() for value in values.values()):
+                return None
+            for name in ("core_path", "project_state_path", "compiler_script", "python_executable"):
+                if not Path(values[name]).expanduser().is_absolute():
+                    return None
+            if len(values["source_commit"]) != 40 or any(
+                character not in "0123456789abcdef" for character in values["source_commit"]
+            ):
+                return None
+            timeout = ctx.get_config("interactive_timeout_seconds", 10.0)
+            if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or not 0 < timeout <= 30:
+                return None
+            return cls(**values, timeout_seconds=float(timeout))
+        except Exception:
             return None
 
 
@@ -212,10 +308,149 @@ class K3HookRuntime:
             if self.settings.executable_hash is not None and compiler.get("executable_hash") != self.settings.executable_hash:
                 return None
             rendered = self.core.render_markdown(capsule)
+            if self.settings.worker_input_path is not None:
+                worker_path = Path(self.settings.worker_input_path)
+                if not worker_path.is_absolute():
+                    return None
+                raw_worker, _ = _read_project_state(worker_path)
+                worker = json.loads(raw_worker)
+                if not isinstance(worker, Mapping):
+                    return None
+                supplied_hash = worker.get("input_pack_hash")
+                hash_material = {key: value for key, value in worker.items() if key != "input_pack_hash"}
+                if (
+                    worker.get("schema_version") != "yatima.k3.worker-input.v1"
+                    or worker.get("task_id") != scope.get("task_id")
+                    or worker.get("authority_expanded") is not False
+                    or supplied_hash != self.core.sha256_json(hash_material)
+                ):
+                    return None
+                rendered = (
+                    "# Yatima K3 narrow worker input pack\n\n"
+                    "This pack is evidence context for an already-authorized worker; "
+                    "it does not dispatch work or expand authority.\n\n"
+                    f"- worker_input: {self.core.canonical_json(worker)}\n"
+                )
             if not isinstance(rendered, str) or not rendered.strip():
                 return None
             # Hermes invokes this hook before composing the API user message;
             # it does not persist returned context in the session DB/history.
+            return {"context": rendered}
+        except Exception:
+            return None
+
+
+@dataclass
+class InteractiveK3Runtime:
+    settings: InteractiveSettings
+    semantic_view_by_request: dict[str, str] = field(default_factory=dict, repr=False)
+
+    def on_pre_llm_call(self, **kwargs: Any) -> dict[str, str] | None:
+        """Compile fresh project continuity for ordinary Hermes turns."""
+
+        session_id = kwargs.get("session_id")
+        goal = kwargs.get("user_message")
+        if not isinstance(session_id, str) or not session_id.strip():
+            return None
+        if not isinstance(goal, str) or not goal.strip():
+            return None
+        goal = goal.strip()[:2000]
+        try:
+            state_path = Path(self.settings.project_state_path)
+            raw, source_snapshot = _read_project_state(state_path)
+            state = json.loads(raw)
+            if not isinstance(state, dict) or state.get("schema_version") != "yatima.k3.project-state.v1":
+                return None
+            if state.get("project_scope") != self.settings.project_scope:
+                return None
+            state_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+            normalized_session = session_id.strip()
+            request_key = hashlib.sha256(
+                f"{state_hash}\0{goal}".encode("utf-8")
+            ).hexdigest()
+            cached_view = self.semantic_view_by_request.get(request_key)
+            if cached_view and _history_retains_marker(
+                kwargs.get("conversation_history"), f"yatima-k3-view:{cached_view}"
+            ):
+                return None
+            source_generation = hashlib.sha256(
+                f"{self.settings.project_scope}\0{goal}\0{state_hash}".encode("utf-8")
+            ).hexdigest()
+            payload = {
+                "clientKind": "Hermes",
+                "clientInstanceId": self.settings.profile_or_agent,
+                "roleId": self.settings.role_scope,
+                "projectScope": self.settings.project_scope,
+                "hostId": self.settings.host_id,
+                "sessionId": normalized_session,
+                "goal": goal,
+                "sourceGeneration": source_generation,
+                "provider": "hermes-configured-route",
+                "model": str(kwargs.get("model") or "unreported"),
+                "endpoint": str(kwargs.get("platform") or "hermes-interactive"),
+                "sourceRepository": self.settings.source_repository,
+                "sourceCommit": self.settings.source_commit,
+                "pointers": [],
+                "projectStateRaw": raw,
+                "projectStatePath": str(state_path),
+                "projectStateHash": state_hash,
+                "projectStateSnapshot": source_snapshot,
+                "deliveryEpoch": str(
+                    kwargs.get("turn_id")
+                    or f"history-{len(kwargs.get('conversation_history', [])) if isinstance(kwargs.get('conversation_history'), list) else 0}"
+                ),
+            }
+            completed = subprocess.run(
+                [
+                    self.settings.python_executable,
+                    self.settings.compiler_script,
+                    "--core",
+                    self.settings.core_path,
+                ],
+                input=json.dumps(payload, ensure_ascii=False) + "\n",
+                text=True,
+                capture_output=True,
+                shell=False,
+                timeout=self.settings.timeout_seconds,
+                check=False,
+            )
+            if completed.returncode != 0 or len(completed.stdout.encode("utf-8")) > _MAX_COMPILER_OUTPUT_BYTES:
+                return None
+            result = json.loads(completed.stdout)
+            capsule = result.get("task_session_capsule")
+            if result.get("status") != "PASS" or result.get("project_state_loaded") is not True:
+                return None
+            if not isinstance(capsule, dict):
+                return None
+            if (
+                capsule.get("project_scope") != self.settings.project_scope
+                or capsule.get("profile_or_agent") != self.settings.profile_or_agent
+                or capsule.get("session_id") != normalized_session
+                or capsule.get("source_generation") != source_generation
+            ):
+                return None
+            context_pack = result.get("context_pack")
+            semantic_view_id = result.get("semantic_view_id")
+            delivery = result.get("delivery_receipt")
+            rendered = result.get("context_markdown")
+            if (
+                not isinstance(context_pack, Mapping)
+                or context_pack.get("admitted") is not True
+                or not isinstance(semantic_view_id, str)
+                or len(semantic_view_id) != 64
+                or context_pack.get("semantic_view_id") != semantic_view_id
+                or not isinstance(delivery, Mapping)
+                or delivery.get("semantic_view_id") != semantic_view_id
+                or delivery.get("retention_marker") != f"yatima-k3-view:{semantic_view_id}"
+                or not isinstance(rendered, str)
+                or f"<!-- yatima-k3-view:{semantic_view_id} -->" not in rendered
+            ):
+                return None
+            if request_key not in self.semantic_view_by_request and len(self.semantic_view_by_request) >= 256:
+                self.semantic_view_by_request.pop(next(iter(self.semantic_view_by_request)))
+            # Cache only after a complete validated compile. A timeout, parse
+            # failure, or rejected view never consumes the recovery chance.
+            self.semantic_view_by_request[request_key] = semantic_view_id
             return {"context": rendered}
         except Exception:
             return None
@@ -242,6 +477,7 @@ def build_runtime(settings: PluginSettings) -> K3HookRuntime:
 
 
 def register_plugin(ctx: Any) -> None:
+    worker_override_present = bool(os.environ.get("YATIMA_K3_WORKER_SETTINGS_JSON"))
     settings = PluginSettings.from_context(ctx)
     if settings is not None:
         try:
@@ -249,6 +485,11 @@ def register_plugin(ctx: Any) -> None:
         except Exception:
             runtime = None
         if runtime is not None:
+            ctx.register_hook("pre_llm_call", runtime.on_pre_llm_call)
+    elif not worker_override_present:
+        interactive = InteractiveSettings.from_context(ctx)
+        if interactive is not None:
+            runtime = InteractiveK3Runtime(interactive)
             ctx.register_hook("pre_llm_call", runtime.on_pre_llm_call)
 
     # Runtime integrity is a separate, explicitly namespaced opt-in.  Keep it

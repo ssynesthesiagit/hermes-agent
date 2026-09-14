@@ -49,6 +49,27 @@ remove the hook, and remove only the disposable precompiled artifact/cache
 files when their owner no longer needs them. No normal Codex config or live
 Hermes profile is modified by this plugin package.
 
+## Interactive continuity and context-loss recovery
+
+With `interactive_continuity_enabled: true`, the plugin reads the configured
+project checkpoint through a no-follow, stable file descriptor and invokes the
+source-locked client compiler for each new semantic request. The compiler
+returns a bounded F1-F5 context projection with a `yatima-k3-view:<sha256>`
+retention marker.
+
+Hermes persists prior API-sidecars for exact replay until history compression
+rewrites them. The plugin suppresses a repeated view only when that exact
+marker remains in a host-owned historical `api_content` sidecar. After
+compaction/reset—or whenever retention is unknown—it reinjects the complete
+bounded view. Compile failure, timeout, malformed output, and wrong-scope state
+do not update the delivery cache, so they cannot consume a later recovery
+opportunity. Runtime caches are instance-local; Brain and Yatima profiles do
+not share suppression state.
+
+This is a request-scoped projection at Hermes' real `pre_llm_call` seam. It
+does not claim to replace the whole request, change the system prompt, dispatch
+work, or expand authority.
+
 ## Runtime Integrity V1.1 (opt-in)
 
 The same package can register the portable Runtime Integrity adapter when the
@@ -86,6 +107,14 @@ runtime, authorization, model-call, and tool receipts are appended to the
 existing SQLite WAL ledger. No private key is written to disk. Missing K3
 source, ledger, runtime identity, request ID, or current task/run binding
 fails before provider/tool execution.
+
+When the configured K3 core provides the intelligent-context primitives, the
+dispatcher also writes a hash-bound `yatima.k3.worker-input.v1` file containing
+only the worker's protected task core and selected evidence. The plugin
+validates its hash, task binding, and `authority_expanded: false` before using
+that narrow pack instead of the full capsule rendering. The shared core's
+return-delta validator rejects stale semantic-view returns and never permits a
+worker delta alone to close the parent task.
 
 The worker bundle does not dispatch anything. The existing Kanban claim,
 one-slot guard, assignee profile, and owner envelope remain authoritative.

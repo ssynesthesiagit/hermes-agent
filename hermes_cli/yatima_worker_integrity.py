@@ -314,9 +314,37 @@ def prepare_worker_security(
     capsule_path = bundle_root / "capsule.json"
     receipts_path = bundle_root / "receipts.json"
     cache_path = bundle_root / "cache.json"
+    worker_input_path = bundle_root / "worker-input.json"
     _atomic_json(capsule_path, compiled.capsule.as_dict())
     _atomic_json(receipts_path, compiled.receipts.to_dict())
     _atomic_json(cache_path, compiled.cache_binding.to_dict())
+    worker_input = None
+    if all(
+        hasattr(k3, name)
+        for name in ("build_context_pack", "build_worker_input_pack")
+    ):
+        context_pack = k3.build_context_pack(
+            compiled.capsule,
+            str(goal),
+            soft_limit_bytes=8_000,
+            hard_limit_bytes=16_000,
+            max_working_items=8,
+        )
+        if context_pack.get("admitted") is not True:
+            raise YatimaWorkerIntegrityError("worker context pack exceeded its hard limit")
+        evidence_ids = [
+            item["evidence_id"]
+            for item in context_pack.get("working_set", [])
+            if isinstance(item, Mapping) and isinstance(item.get("evidence_id"), str)
+        ]
+        worker_input = k3.build_worker_input_pack(
+            context_pack,
+            delegation_id=f"kanban:{task_id}:run:{run_id}",
+            worker_id=profile_id,
+            task_id=task_id,
+            evidence_ids=evidence_ids,
+        )
+        _atomic_json(worker_input_path, worker_input)
     k3_settings = {
         "enabled": True,
         "core_path": str(k3_root),
@@ -330,6 +358,8 @@ def prepare_worker_security(
         "schema_generation": "yatima.k3.v1",
         "context_required_fields": ["task_id"],
     }
+    if worker_input is not None:
+        k3_settings["worker_input_path"] = str(worker_input_path)
     env["YATIMA_K3_WORKER_SETTINGS_JSON"] = json.dumps(k3_settings, separators=(",", ":"))
 
     integrity_core_root = Path(str(settings.get("integrity_core_path", ""))).expanduser().resolve(strict=False)
@@ -405,6 +435,8 @@ def prepare_worker_security(
         "task_id": task_id,
         "attempt_id": attempt_id,
         "capsule_path": str(capsule_path),
+        "worker_input_path": str(worker_input_path) if worker_input is not None else None,
+        "worker_semantic_view_id": worker_input.get("semantic_view_id") if worker_input is not None else None,
         "ledger_path": str(ledger_path),
         "registry_path": str(registry_path),
         "quarantine_root": str(quarantine_root),
