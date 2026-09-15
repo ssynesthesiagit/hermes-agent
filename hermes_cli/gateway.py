@@ -7025,6 +7025,18 @@ def _platform_status(platform: dict) -> str:
     return "not configured"
 
 
+def _configured_runtime_platforms() -> set[str] | None:
+    """Return the active profile's configured platforms, or None on failure."""
+    try:
+        from gateway.config import load_gateway_config
+
+        config = load_gateway_config()
+        return {platform.value for platform in config.get_connected_platforms()}
+    except Exception:
+        # Runtime status remains useful when config loading itself is broken.
+        return None
+
+
 def _runtime_health_lines() -> list[str]:
     """Summarize the latest persisted gateway runtime health state."""
     try:
@@ -7046,8 +7058,21 @@ def _runtime_health_lines() -> list[str]:
     active_agents = state.get("active_agents")
     restart_requested = state.get("restart_requested")
     platforms = state.get("platforms", {}) or {}
+    configured_platforms = _configured_runtime_platforms()
 
     for platform, pdata in platforms.items():
+        # Plain entries are deliberately preserved across gateway restarts so
+        # the dashboard retains last-known state while adapters reconnect.
+        # Once a platform is disabled, though, its preserved fatal record is
+        # historical rather than current profile health. Namespaced entries
+        # belong to multiplexed profiles and cannot be checked against this
+        # profile's config set, so retain their existing behavior.
+        if (
+            ":" not in platform
+            and configured_platforms is not None
+            and platform not in configured_platforms
+        ):
+            continue
         if pdata.get("state") == "fatal":
             message = pdata.get("error_message") or "unknown error"
             lines.append(f"⚠ {platform}: {message}")

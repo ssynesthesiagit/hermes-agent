@@ -45,6 +45,9 @@ def test_runtime_health_lines_flags_stale_running_with_dead_pid(monkeypatch):
 
 def test_runtime_health_lines_include_fatal_platform_and_startup_reason(monkeypatch):
     monkeypatch.setattr(
+        "hermes_cli.gateway._configured_runtime_platforms", lambda: {"telegram"}
+    )
+    monkeypatch.setattr(
         "gateway.status.read_runtime_status",
         lambda: {
             "gateway_state": "startup_failed",
@@ -64,6 +67,25 @@ def test_runtime_health_lines_include_fatal_platform_and_startup_reason(monkeypa
     assert "⚠ Last startup issue: telegram conflict" in lines
 
 
+def test_runtime_health_lines_ignore_disabled_platform_history(monkeypatch):
+    monkeypatch.setattr("hermes_cli.gateway._configured_runtime_platforms", lambda: set())
+    monkeypatch.setattr("gateway.status.runtime_status_is_stale", lambda state: False)
+    monkeypatch.setattr(
+        "gateway.status.read_runtime_status",
+        lambda: {
+            "gateway_state": "running",
+            "platforms": {
+                "telegram": {
+                    "state": "fatal",
+                    "error_message": "No bot token configured",
+                }
+            },
+        },
+    )
+
+    assert _runtime_health_lines() == []
+
+
 def test_runtime_status_running_pid_validates_live_gateway_record(monkeypatch):
     from gateway import status as status_mod
 
@@ -79,5 +101,3 @@ def test_runtime_status_running_pid_validates_live_gateway_record(monkeypatch):
     monkeypatch.setattr(status_mod, "_looks_like_gateway_process", lambda pid: False)
 
     assert status_mod.get_runtime_status_running_pid(runtime) == 12345
-
-
