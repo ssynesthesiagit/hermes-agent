@@ -183,6 +183,44 @@ async def test_startup_one_failing_platform_does_not_block_others(monkeypatch, t
     assert Platform.TELEGRAM in runner._failed_platforms
 
 
+@pytest.mark.asyncio
+async def test_successful_startup_clears_stale_attention_fields(monkeypatch, tmp_path):
+    """A recovered cold start must not inherit an earlier outage warning."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from gateway import status as status_module
+
+    status_module.write_runtime_status(
+        platform="telegram",
+        platform_state="retrying",
+        error_code="telegram_connect_error",
+        error_message="old outage",
+        needs_attention=True,
+        retrying_since="2026-09-14T00:00:00+00:00",
+    )
+
+    config = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="***"),
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+    monkeypatch.setattr(
+        runner,
+        "_create_adapter",
+        lambda platform, platform_config: _TimingAdapter(platform, 0.0),
+    )
+    monkeypatch.setattr(runner, "_start_secondary_profile_adapters", lambda: 0)
+
+    await runner.start()
+
+    platform = status_module.read_runtime_status()["platforms"]["telegram"]
+    assert platform["state"] == "connected"
+    assert platform["needs_attention"] is False
+    assert platform["retrying_since"] is None
+
+
 class TestTelegramColdStartCap:
     """The initial (pre-`running`) Telegram connect uses a capped budget (#85993).
 
